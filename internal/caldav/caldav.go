@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"path"
 	"slices"
 	"strings"
@@ -20,9 +21,11 @@ import (
 // errLogin is returned when the server rejects our credentials.
 var errLogin = errors.New("CalDAV login failed: check BEACON_CALDAV_USER and BEACON_CALDAV_PASSWORD_CMD")
 
-// Client reads tasks from the configured lists on a CalDAV server.
+// Client reads and writes tasks on a CalDAV server.
 type Client struct {
 	dav   *caldav.Client
+	http  *authClient // for requests go-webdav cannot send (conditional PUT)
+	base  *url.URL    // server address; paths from the server are resolved against it
 	lists []string
 }
 
@@ -34,20 +37,32 @@ func NewClient(endpoint, user, password string, lists []string) (*Client, error)
 		user:     user,
 		password: password,
 	}
+	base, err := url.Parse(endpoint)
+	if err != nil || base.Scheme == "" || base.Host == "" {
+		return nil, errors.New("BEACON_CALDAV_URL is not a valid URL (example: https://dav.example.org/)")
+	}
 	dav, err := caldav.NewClient(httpClient, endpoint)
 	if err != nil {
 		return nil, fmt.Errorf("BEACON_CALDAV_URL is not a valid URL: %w", err)
 	}
-	return &Client{dav: dav, lists: lists}, nil
+	return &Client{dav: dav, http: httpClient, base: base, lists: lists}, nil
 }
 
 // OpenTasks returns all open tasks from the configured lists, unordered.
 // Completed and cancelled tasks are left out. Recurring tasks are included
 // and marked with Recurring.
 func (c *Client) OpenTasks(ctx context.Context) ([]focus.Task, error) {
-	cals, err := c.findLists(ctx)
+	taskLists, err := c.taskLists(ctx)
 	if err != nil {
 		return nil, err
+	}
+	var cals []caldav.Calendar
+	for _, name := range c.lists {
+		cal, err := findList(taskLists, name)
+		if err != nil {
+			return nil, fmt.Errorf("%w; check BEACON_LISTS", err)
+		}
+		cals = append(cals, cal)
 	}
 
 	// Ask only for calendar objects that contain a VTODO.
@@ -72,6 +87,8 @@ func (c *Client) OpenTasks(ctx context.Context) ([]focus.Task, error) {
 		for _, obj := range objects {
 			task, ok := taskFromCalendar(obj.Data, cal.Name)
 			if ok {
+				task.Path = obj.Path
+				task.ETag = obj.ETag
 				tasks = append(tasks, task)
 			}
 		}
@@ -79,10 +96,10 @@ func (c *Client) OpenTasks(ctx context.Context) ([]focus.Task, error) {
 	return tasks, nil
 }
 
-// findLists returns the collections whose name matches one of c.lists.
-// Matching ignores case and also accepts the last part of the URL path,
-// because some collections have no display name.
-func (c *Client) findLists(ctx context.Context) ([]caldav.Calendar, error) {
+// taskLists returns all collections on the server that can hold tasks.
+// Collections without a display name are named after the last part of
+// their URL path.
+func (c *Client) taskLists(ctx context.Context) ([]caldav.Calendar, error) {
 	principal, err := c.dav.FindCurrentUserPrincipal(ctx)
 	if err != nil {
 		return nil, friendlyError(fmt.Errorf("cannot reach CalDAV server: %w", err))
@@ -96,7 +113,6 @@ func (c *Client) findLists(ctx context.Context) ([]caldav.Calendar, error) {
 		return nil, friendlyError(fmt.Errorf("cannot list your CalDAV collections: %w", err))
 	}
 
-	// Only collections that can hold tasks are relevant.
 	var taskCals []caldav.Calendar
 	for _, cal := range all {
 		if supportsTasks(cal) {
@@ -106,23 +122,20 @@ func (c *Client) findLists(ctx context.Context) ([]caldav.Calendar, error) {
 			taskCals = append(taskCals, cal)
 		}
 	}
+	return taskCals, nil
+}
 
-	var found []caldav.Calendar
-	for _, want := range c.lists {
-		match := false
-		for _, cal := range taskCals {
-			base := path.Base(strings.TrimSuffix(cal.Path, "/"))
-			if strings.EqualFold(cal.Name, want) || strings.EqualFold(base, want) {
-				found = append(found, cal)
-				match = true
-			}
-		}
-		if !match {
-			return nil, fmt.Errorf("list %q not found on the CalDAV server (task lists there: %s); check BEACON_LISTS",
-				want, listNames(taskCals))
+// findList picks the collection called name. Matching ignores case and also
+// accepts the last part of the URL path.
+func findList(cals []caldav.Calendar, name string) (caldav.Calendar, error) {
+	for _, cal := range cals {
+		base := path.Base(strings.TrimSuffix(cal.Path, "/"))
+		if strings.EqualFold(cal.Name, name) || strings.EqualFold(base, name) {
+			return cal, nil
 		}
 	}
-	return found, nil
+	return caldav.Calendar{}, fmt.Errorf("list %q not found on the CalDAV server (task lists there: %s)",
+		name, listNames(cals))
 }
 
 // supportsTasks reports whether a collection can contain VTODOs. A server

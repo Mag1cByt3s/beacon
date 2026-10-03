@@ -29,6 +29,11 @@ type Task struct {
 
 	// Recurring tasks (RRULE) are handled on the phone, not in focus mode.
 	Recurring bool
+
+	// Where the task is stored and which version was read. focus ignores
+	// these; the caldav package needs them to write the task back safely.
+	Path string
+	ETag string
 }
 
 // Overdue reports whether the task's due date has passed at time now.

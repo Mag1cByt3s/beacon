@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"io"
 	"time"
 
 	"github.com/Mag1cByt3s/beacon/internal/api"
@@ -23,7 +24,8 @@ type backend interface {
 }
 
 // newBackend picks the server when BEACON_SERVER_URL is set, else CalDAV.
-func newBackend(cfg config.Config) (backend, error) {
+// stderr is passed on to the password command (nil keeps it silent).
+func newBackend(ctx context.Context, cfg config.Config, stderr io.Writer) (backend, error) {
 	if cfg.UseServer() {
 		if err := cfg.CheckAPI(); err != nil {
 			return nil, err
@@ -43,7 +45,7 @@ func newBackend(cfg config.Config) (backend, error) {
 	password := ""
 	if cfg.User != "" {
 		var err error
-		password, err = cfg.Password()
+		password, err = cfg.Password(ctx, stderr)
 		if err != nil {
 			return nil, err
 		}

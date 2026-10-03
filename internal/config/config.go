@@ -3,8 +3,10 @@ package config
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"strings"
@@ -100,17 +102,22 @@ func (c Config) CheckAPI() error {
 
 // Password runs PasswordCmd and returns its output without the trailing
 // newline. The command is split on whitespace and run directly, not through
-// a shell, so quotes and pipes are not supported.
-func (c Config) Password() (string, error) {
+// a shell, so quotes and pipes are not supported. It is killed when ctx ends.
+//
+// stderr receives the command's messages, and then the command may also
+// read from the terminal (for example to ask for a GPG passphrase). With
+// stderr nil it runs silently and without the terminal.
+func (c Config) Password(ctx context.Context, stderr io.Writer) (string, error) {
 	argv := strings.Fields(c.PasswordCmd)
 	if len(argv) == 0 {
 		return "", errors.New("BEACON_CALDAV_PASSWORD_CMD is not set")
 	}
 
-	cmd := exec.Command(argv[0], argv[1:]...)
-	// Let tools like `pass` ask for a GPG passphrase on the terminal.
-	cmd.Stdin = os.Stdin
-	cmd.Stderr = os.Stderr
+	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
+	if stderr != nil {
+		cmd.Stdin = os.Stdin
+		cmd.Stderr = stderr
+	}
 	out, err := cmd.Output()
 	if err != nil {
 		// Never include the output here: it might contain the password.

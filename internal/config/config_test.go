@@ -1,9 +1,11 @@
 package config
 
 import (
+	"context"
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 )
 
 // clearEnv empties all beacon variables so the user's real environment
@@ -89,7 +91,7 @@ func TestChecks(t *testing.T) {
 
 func TestPassword(t *testing.T) {
 	c := Config{PasswordCmd: "echo not-a-real-secret"}
-	pw, err := c.Password()
+	pw, err := c.Password(context.Background(), nil)
 	if err != nil {
 		t.Fatalf("Password: %v", err)
 	}
@@ -100,7 +102,21 @@ func TestPassword(t *testing.T) {
 
 func TestPasswordCommandFails(t *testing.T) {
 	c := Config{PasswordCmd: "false"}
-	if _, err := c.Password(); err == nil {
+	if _, err := c.Password(context.Background(), nil); err == nil {
 		t.Error("Password succeeded, want an error")
+	}
+}
+
+func TestPasswordTimeout(t *testing.T) {
+	c := Config{PasswordCmd: "sleep 10"}
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+
+	start := time.Now()
+	if _, err := c.Password(ctx, nil); err == nil {
+		t.Error("Password succeeded, want an error")
+	}
+	if d := time.Since(start); d > 2*time.Second {
+		t.Errorf("Password took %v; the command was not stopped", d)
 	}
 }

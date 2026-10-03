@@ -39,7 +39,7 @@ func run(log *slog.Logger) error {
 	password := ""
 	if cfg.User != "" {
 		var err error
-		password, err = cfg.Password()
+		password, err = cfg.Password(context.Background(), os.Stderr)
 		if err != nil {
 			return err
 		}

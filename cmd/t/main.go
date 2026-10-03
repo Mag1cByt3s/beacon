@@ -68,7 +68,7 @@ func run(args []string, out io.Writer) error {
 	}
 
 	cfg := config.Load()
-	b, err := newBackend(cfg)
+	b, err := newBackend(context.Background(), cfg, os.Stderr)
 	if err != nil {
 		return err
 	}

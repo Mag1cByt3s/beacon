@@ -76,6 +76,7 @@ internal/config/  config from environment variables
 | `BEACON_DEFAULT_LIST` | list for new captures | `Todo` |
 | `BEACON_SERVER_URL` | beacon API URL (from milestone 3) | `https://beacon.example.org` |
 | `BEACON_TOKEN` | API bearer token (from milestone 3) | read from env only |
+| `BEACON_TOKEN_FILE` | file holding the token; takes precedence over `BEACON_TOKEN`; the server refuses a file other users can read (from milestone 5) | `/usr/local/etc/beacon/token` |
 | `BEACON_LISTEN` | server listen address (from milestone 3) | `127.0.0.1:8080` (default) |
 | `BEACON_DB` | server SQLite file for focus state (from milestone 3) | `/var/db/beacon/beacon.db` |
 

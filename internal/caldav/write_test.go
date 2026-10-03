@@ -44,7 +44,8 @@ func openTask(t *testing.T, c *Client, uid string) focus.Task {
 func TestCreate(t *testing.T) {
 	c, backend := newTestClient(t)
 
-	name, err := c.Create(context.Background(), "todo", "Buy coffee, beans; fresh")
+	uid := NewUID()
+	name, err := c.Create(context.Background(), "todo", uid, "Buy coffee, beans; fresh")
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -59,7 +60,9 @@ func TestCreate(t *testing.T) {
 	obj := objects[2]
 	todo := obj.Data.Children[0]
 
-	uid := text(todo.Props, ical.PropUID)
+	if got := text(todo.Props, ical.PropUID); got != uid {
+		t.Errorf("UID = %q, want %q", got, uid)
+	}
 	if obj.Path != caldavtest.TodoPath+uid+".ics" {
 		t.Errorf("path = %q, want it named after UID %q", obj.Path, uid)
 	}
@@ -90,7 +93,7 @@ func TestCreate(t *testing.T) {
 
 func TestCreateUnknownList(t *testing.T) {
 	c, _ := newTestClient(t)
-	_, err := c.Create(context.Background(), "Nope", "x")
+	_, err := c.Create(context.Background(), "Nope", NewUID(), "x")
 	if err == nil || !strings.Contains(err.Error(), "BEACON_DEFAULT_LIST") {
 		t.Errorf("err = %v, want a hint about BEACON_DEFAULT_LIST", err)
 	}
@@ -240,13 +243,81 @@ func TestCompleteRefusesRecurring(t *testing.T) {
 }
 
 func TestNewUID(t *testing.T) {
-	a, err := newUID()
+	a, b := NewUID(), NewUID()
+	if a == b || len(a) != 36 || a[14] != '4' || !ValidUID(a) {
+		t.Errorf("NewUID gave %q and %q", a, b)
+	}
+}
+
+func TestValidUID(t *testing.T) {
+	tests := []struct {
+		uid  string
+		want bool
+	}{
+		{"6F1C2B9E-0D4A-4C3B-9A51-2E7F8C1D3B40", true},
+		{"task_1.2@example.org", true},
+		{"", false},
+		{"../other/x", false},
+		{"a/b", false},
+		{".hidden", false},
+		{"with space", false},
+		{"ümlaut", false},
+		{strings.Repeat("a", 129), false},
+	}
+	for _, tt := range tests {
+		if got := ValidUID(tt.uid); got != tt.want {
+			t.Errorf("ValidUID(%q) = %v, want %v", tt.uid, got, tt.want)
+		}
+	}
+}
+
+func TestCreateRetryMakesNoDuplicate(t *testing.T) {
+	c, backend := newTestClient(t)
+	uid := NewUID()
+	ctx := context.Background()
+
+	if _, err := c.Create(ctx, "Todo", uid, "Buy coffee"); err != nil {
+		t.Fatal(err)
+	}
+	// The same capture again, as after a lost answer.
+	if _, err := c.Create(ctx, "Todo", uid, "Buy coffee"); !errors.Is(err, ErrExists) {
+		t.Errorf("retry: err = %v, want ErrExists", err)
+	}
+	if n := len(backend.Objects[caldavtest.TodoPath]); n != 3 {
+		t.Errorf("Todo has %d objects, want 3 (2 + 1 new)", n)
+	}
+}
+
+func TestCreateRejectsBadUID(t *testing.T) {
+	c, _ := newTestClient(t)
+	if _, err := c.Create(context.Background(), "Todo", "../groceries/x", "x"); !errors.Is(err, ErrInvalidUID) {
+		t.Errorf("err = %v, want ErrInvalidUID", err)
+	}
+}
+
+func TestUnreachable(t *testing.T) {
+	srv, _ := caldavtest.NewServer(t)
+	c, err := NewClient(srv.URL+"/", caldavtest.User, caldavtest.Password, []string{"Todo"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	b, _ := newUID()
-	if a == b || len(a) != 36 || a[14] != '4' {
-		t.Errorf("newUID gave %q and %q", a, b)
+	srv.Close()
+
+	ctx := context.Background()
+	if _, err := c.OpenTasks(ctx); !errors.Is(err, ErrUnreachable) {
+		t.Errorf("OpenTasks: err = %v, want ErrUnreachable", err)
+	}
+	if _, err := c.Create(ctx, "Todo", NewUID(), "x"); !errors.Is(err, ErrUnreachable) {
+		t.Errorf("Create: err = %v, want ErrUnreachable", err)
+	}
+}
+
+func TestLoginErrorIsNotUnreachable(t *testing.T) {
+	srv, _ := caldavtest.NewServer(t)
+	c, _ := NewClient(srv.URL+"/", caldavtest.User, "wrong", []string{"Todo"})
+	_, err := c.Create(context.Background(), "Todo", NewUID(), "x")
+	if err == nil || errors.Is(err, ErrUnreachable) {
+		t.Errorf("err = %v, want a login error that is not ErrUnreachable", err)
 	}
 }
 

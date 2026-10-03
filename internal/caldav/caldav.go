@@ -18,6 +18,18 @@ import (
 	"github.com/Mag1cByt3s/beacon/internal/focus"
 )
 
+// ErrUnreachable is matched (with errors.Is) by errors that mean the CalDAV
+// server could not be reached at all: no network, server down, timeout.
+var ErrUnreachable = errors.New("CalDAV server unreachable")
+
+// unreachableError wraps a network error so that errors.Is(err,
+// ErrUnreachable) is true, while keeping the original message.
+type unreachableError struct{ err error }
+
+func (e unreachableError) Error() string        { return e.err.Error() }
+func (e unreachableError) Unwrap() error        { return e.err }
+func (e unreachableError) Is(target error) bool { return target == ErrUnreachable }
+
 // errLogin is returned when the server rejects our credentials.
 var errLogin = errors.New("CalDAV login failed: check BEACON_CALDAV_USER and BEACON_CALDAV_PASSWORD_CMD")
 
@@ -182,7 +194,8 @@ func (c *authClient) Do(req *http.Request) (*http.Response, error) {
 	}
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return nil, err
+		// http.Client only returns an error when there was no HTTP answer.
+		return nil, unreachableError{err}
 	}
 	if resp.StatusCode == http.StatusUnauthorized {
 		resp.Body.Close()

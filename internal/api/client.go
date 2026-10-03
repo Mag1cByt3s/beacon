@@ -17,6 +17,21 @@ import (
 // ErrUnauthorized means the server did not accept the token.
 var ErrUnauthorized = errors.New("the beacon server rejected the token; check BEACON_TOKEN")
 
+// ErrUnreachable is matched (with errors.Is) by errors that mean the task
+// could not get through and trying again later may work: the beacon server
+// is down or slow, or it cannot reach the CalDAV server (503).
+var ErrUnreachable = errors.New("unreachable")
+
+// ErrExists means a task with this UID already exists, so an earlier
+// attempt of the same capture already got through.
+var ErrExists = errors.New("a task with this uid already exists")
+
+// unreachableError keeps a human message while matching ErrUnreachable.
+type unreachableError struct{ msg string }
+
+func (e unreachableError) Error() string        { return e.msg }
+func (e unreachableError) Is(target error) bool { return target == ErrUnreachable }
+
 // ConflictError means the server refused to complete the current task
 // because it changed elsewhere since it became current. Current is the task
 // as it is now, if the server sent it.
@@ -68,10 +83,16 @@ func (c *Client) Current(ctx context.Context) (task focus.Task, ok bool, err err
 	return optional(resp.Task)
 }
 
-// Add creates a task and returns the name of the list it went to.
-func (c *Client) Add(ctx context.Context, summary string) (string, error) {
+// Add creates a task with the given UID and returns the name of the list
+// it went to. If a task with that UID already exists, it returns ErrExists.
+func (c *Client) Add(ctx context.Context, uid, summary string) (string, error) {
 	var resp AddResponse
-	if err := c.do(ctx, http.MethodPost, "tasks", AddRequest{Summary: summary}, &resp); err != nil {
+	err := c.do(ctx, http.MethodPost, "tasks", AddRequest{UID: uid, Summary: summary}, &resp)
+	var conflict *ConflictError
+	if errors.As(err, &conflict) {
+		return "", ErrExists
+	}
+	if err != nil {
 		return "", err
 	}
 	return resp.List, nil
@@ -128,9 +149,9 @@ func (c *Client) do(ctx context.Context, method, path string, in, out any) error
 	resp, err := c.http.Do(req)
 	if err != nil {
 		if errors.Is(err, context.DeadlineExceeded) {
-			return fmt.Errorf("the beacon server at %s did not answer in time", c.base.Host)
+			return unreachableError{fmt.Sprintf("the beacon server at %s did not answer in time", c.base.Host)}
 		}
-		return fmt.Errorf("cannot reach the beacon server at %s; is it running? (check BEACON_SERVER_URL)", c.base.Host)
+		return unreachableError{fmt.Sprintf("cannot reach the beacon server at %s; is it running? (check BEACON_SERVER_URL)", c.base.Host)}
 	}
 	defer resp.Body.Close()
 
@@ -152,6 +173,8 @@ func (c *Client) do(ctx context.Context, method, path string, in, out any) error
 	switch resp.StatusCode {
 	case http.StatusUnauthorized:
 		return ErrUnauthorized
+	case http.StatusServiceUnavailable:
+		return unreachableError{"beacon server: " + msg}
 	case http.StatusConflict:
 		conflict := &ConflictError{Message: msg}
 		if errResp.Current != nil {

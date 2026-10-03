@@ -27,7 +27,7 @@ const requestTimeout = 25 * time.Second
 // Tasks is the task storage the server needs. *caldav.Client provides it.
 type Tasks interface {
 	OpenTasks(ctx context.Context) ([]focus.Task, error)
-	Create(ctx context.Context, list, summary string) (string, error)
+	Create(ctx context.Context, list, uid, summary string) (string, error)
 	Complete(ctx context.Context, task focus.Task) error
 }
 
@@ -144,14 +144,27 @@ func (s *Server) addTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	uid := req.UID
+	if uid == "" {
+		uid = caldav.NewUID()
+	}
+
 	// Adding a task does not touch the focus state, so no lock is needed.
-	list, err := s.tasks.Create(ctx, s.defaultList, summary)
-	if err != nil {
+	list, err := s.tasks.Create(ctx, s.defaultList, uid, summary)
+	switch {
+	case errors.Is(err, caldav.ErrInvalidUID):
+		writeJSON(w, http.StatusBadRequest, api.ErrorResponse{Error: err.Error()})
+		return
+	case errors.Is(err, caldav.ErrExists):
+		s.log.Info("task already added", "uid", uid)
+		writeJSON(w, http.StatusConflict, api.ErrorResponse{Error: err.Error()})
+		return
+	case err != nil:
 		s.fail(w, caldavError{err})
 		return
 	}
-	s.log.Info("task added", "list", list)
-	writeJSON(w, http.StatusCreated, api.AddResponse{List: list})
+	s.log.Info("task added", "uid", uid, "list", list)
+	writeJSON(w, http.StatusCreated, api.AddResponse{UID: uid, List: list})
 }
 
 func (s *Server) done(w http.ResponseWriter, r *http.Request) {
@@ -321,7 +334,8 @@ func (s *Server) update(ctx context.Context, tasks []focus.Task, cur store.Curre
 }
 
 // caldavError marks an error that came from the CalDAV server, so it is
-// answered with 502 Bad Gateway and its (human) message.
+// answered with 503 (unreachable) or 502 (any other problem) and its
+// (human) message.
 type caldavError struct{ err error }
 
 func (e caldavError) Error() string { return e.err.Error() }
@@ -333,7 +347,11 @@ func (s *Server) fail(w http.ResponseWriter, err error) {
 	var cerr caldavError
 	if errors.As(err, &cerr) {
 		s.log.Error("CalDAV request failed", "err", err)
-		writeJSON(w, http.StatusBadGateway, api.ErrorResponse{Error: err.Error()})
+		status := http.StatusBadGateway
+		if errors.Is(err, caldav.ErrUnreachable) {
+			status = http.StatusServiceUnavailable
+		}
+		writeJSON(w, status, api.ErrorResponse{Error: err.Error()})
 		return
 	}
 	s.log.Error("request failed", "err", err)

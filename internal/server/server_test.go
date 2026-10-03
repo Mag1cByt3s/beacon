@@ -404,11 +404,33 @@ func TestAddTask(t *testing.T) {
 		t.Errorf("current = %q; adding a task must not change it", got)
 	}
 
-	for _, body := range []string{`{"summary":"   "}`, `{}`, `not json`, ``} {
+	for _, body := range []string{`{"summary":"   "}`, `{}`, `not json`, ``, `{"uid":"../x","summary":"x"}`} {
 		var errResp api.ErrorResponse
 		if got := e.do("POST", "/tasks", body, &errResp); got != http.StatusBadRequest || errResp.Error == "" {
 			t.Errorf("body %q: status %d, error %q; want 400 with a message", body, got, errResp.Error)
 		}
+	}
+}
+
+func TestAddTaskWithUID(t *testing.T) {
+	e := newEnv(t)
+	body := `{"uid":"queued-1","summary":"buy coffee"}`
+
+	var resp api.AddResponse
+	if got := e.do("POST", "/tasks", body, &resp); got != http.StatusCreated || resp.UID != "queued-1" {
+		t.Fatalf("status %d, uid %q; want 201, queued-1", got, resp.UID)
+	}
+	if _, ok := e.caldav.Find(caldavtest.TodoPath + "queued-1.ics"); !ok {
+		t.Error("task was not stored under its uid")
+	}
+
+	// A retry of the same capture is refused and creates nothing new.
+	var errResp api.ErrorResponse
+	if got := e.do("POST", "/tasks", body, &errResp); got != http.StatusConflict {
+		t.Errorf("retry: status %d, want 409", got)
+	}
+	if n := len(e.caldav.Objects[caldavtest.TodoPath]); n != 3 {
+		t.Errorf("Todo has %d objects, want 3", n)
 	}
 }
 
@@ -417,8 +439,11 @@ func TestCalDAVDown(t *testing.T) {
 	e.davStop()
 
 	var resp api.ErrorResponse
-	if got := e.do("GET", "/current", "", &resp); got != http.StatusBadGateway {
-		t.Errorf("status = %d, want 502", got)
+	if got := e.do("GET", "/current", "", &resp); got != http.StatusServiceUnavailable {
+		t.Errorf("GET /current: status = %d, want 503", got)
+	}
+	if got := e.do("POST", "/tasks", `{"summary":"x"}`, nil); got != http.StatusServiceUnavailable {
+		t.Errorf("POST /tasks: status = %d, want 503", got)
 	}
 	if !strings.Contains(resp.Error, "CalDAV") {
 		t.Errorf("error = %q, want it to mention CalDAV", resp.Error)

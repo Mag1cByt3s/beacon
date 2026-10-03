@@ -61,9 +61,14 @@ func TestClient(t *testing.T) {
 		t.Fatalf("Current = %+v, %v, %v; want milk", cur, ok, err)
 	}
 
-	list, err := c.Add(ctx, "buy coffee")
+	uid := caldav.NewUID()
+	list, err := c.Add(ctx, uid, "buy coffee")
 	if err != nil || list != "Todo" {
 		t.Errorf("Add = %q, %v; want Todo", list, err)
+	}
+	// Retrying the same capture never creates a duplicate.
+	if _, err := c.Add(ctx, uid, "buy coffee"); !errors.Is(err, api.ErrExists) {
+		t.Errorf("retry: err = %v, want ErrExists", err)
 	}
 
 	tasks, err := c.Tasks(ctx)
@@ -124,6 +129,23 @@ func TestClientUnreachable(t *testing.T) {
 	_, _, err := c.Current(context.Background())
 	if err == nil || !strings.Contains(err.Error(), "cannot reach the beacon server") {
 		t.Errorf("err = %v, want a 'cannot reach' message", err)
+	}
+	if !errors.Is(err, api.ErrUnreachable) {
+		t.Errorf("err = %v, want it to match ErrUnreachable", err)
+	}
+}
+
+func TestClientCalDAVUnreachable(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		w.Write([]byte(`{"error":"cannot reach CalDAV server"}`))
+	}))
+	defer srv.Close()
+
+	c := newClient(t, srv.URL, testToken)
+	_, err := c.Add(context.Background(), caldav.NewUID(), "x")
+	if !errors.Is(err, api.ErrUnreachable) || err.Error() != "beacon server: cannot reach CalDAV server" {
+		t.Errorf("err = %v, want ErrUnreachable with the server's message", err)
 	}
 }
 

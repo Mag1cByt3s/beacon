@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/Mag1cByt3s/beacon/internal/api"
+	"github.com/Mag1cByt3s/beacon/internal/caldav"
 	"github.com/Mag1cByt3s/beacon/internal/config"
 	"github.com/Mag1cByt3s/beacon/internal/focus"
 )
@@ -160,7 +161,7 @@ func execute(ctx context.Context, b backend, cmd command, out io.Writer, default
 		show(next, ok)
 
 	case "add":
-		list, err := b.Add(ctx, cmd.summary)
+		list, err := b.Add(ctx, caldav.NewUID(), cmd.summary)
 		if err != nil {
 			return err
 		}

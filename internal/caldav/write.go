@@ -24,9 +24,23 @@ var ErrConflict = errors.New("the task was changed elsewhere since it was read, 
 // ErrRecurring means beacon refused to complete a recurring task.
 var ErrRecurring = errors.New("recurring tasks are completed on the phone, not with beacon")
 
-// Create adds a new task with the given title to the list called list.
-// It returns the list's name as shown on the server.
-func (c *Client) Create(ctx context.Context, list, summary string) (string, error) {
+// ErrInvalidUID means a UID for a new task contains characters that are not
+// safe in a file name on the server.
+var ErrInvalidUID = errors.New("invalid task uid: use letters, digits, '-', '_', '.' and '@' (at most 128)")
+
+// ErrExists means a task with this UID already exists. When a capture is
+// retried with the same UID, this means the first attempt got through.
+var ErrExists = errors.New("a task with this uid already exists")
+
+// Create adds a new task with the given UID and title to the list called
+// list, and returns the list's name as shown on the server. Make the UID
+// with NewUID. Because the UID decides the file name and existing files are
+// never overwritten, retrying with the same UID cannot create a duplicate:
+// the retry fails with ErrExists instead.
+func (c *Client) Create(ctx context.Context, list, uid, summary string) (string, error) {
+	if !ValidUID(uid) {
+		return "", ErrInvalidUID
+	}
 	taskLists, err := c.taskLists(ctx)
 	if err != nil {
 		return "", err
@@ -36,15 +50,14 @@ func (c *Client) Create(ctx context.Context, list, summary string) (string, erro
 		return "", fmt.Errorf("%w; check BEACON_DEFAULT_LIST", err)
 	}
 
-	uid, err := newUID()
-	if err != nil {
-		return "", err
-	}
 	objectPath := strings.TrimSuffix(cal.Path, "/") + "/" + uid + ".ics"
 
 	// "If-None-Match: *" tells the server to refuse if the file already
 	// exists, so a new task can never overwrite another one.
 	err = c.put(ctx, objectPath, newTodo(uid, summary, time.Now()), "If-None-Match", "*")
+	if errors.Is(err, ErrConflict) {
+		return "", ErrExists
+	}
 	if err != nil {
 		return "", friendlyError(fmt.Errorf("cannot add the task: %w", err))
 	}
@@ -188,13 +201,27 @@ func quoteETag(etag string) string {
 	return `"` + etag + `"`
 }
 
-// newUID returns a random UUID (version 4), the usual form for VTODO UIDs.
-func newUID() (string, error) {
+// NewUID returns a random UUID (version 4), the usual form for VTODO UIDs.
+func NewUID() string {
 	var b [16]byte
-	if _, err := rand.Read(b[:]); err != nil {
-		return "", fmt.Errorf("cannot create a task ID: %w", err)
-	}
+	rand.Read(b[:])         // never fails since Go 1.24
 	b[6] = b[6]&0x0f | 0x40 // version 4
 	b[8] = b[8]&0x3f | 0x80 // RFC 4122 variant
-	return fmt.Sprintf("%X-%X-%X-%X-%X", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16]), nil
+	return fmt.Sprintf("%X-%X-%X-%X-%X", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
+}
+
+// ValidUID reports whether uid is safe to use as a file name for a new
+// task. It must not be empty, start with a dot, or contain a slash.
+func ValidUID(uid string) bool {
+	if uid == "" || len(uid) > 128 || uid[0] == '.' {
+		return false
+	}
+	for _, r := range uid {
+		ok := r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' ||
+			r == '-' || r == '_' || r == '.' || r == '@'
+		if !ok {
+			return false
+		}
+	}
+	return true
 }

@@ -4,12 +4,13 @@
 //	GET  /healthz        "ok", no token needed
 //	GET  /current        CurrentResponse
 //	GET  /tasks          TasksResponse, in focus order
-//	POST /tasks          AddRequest -> 201 AddResponse
+//	POST /tasks          AddRequest -> 201 AddResponse; 409 if the uid exists
 //	POST /current/done   DoneResponse, or 409 ErrorResponse if the task changed
 //	POST /current/skip   SkipResponse
 //
 // Every endpoint except /healthz needs "Authorization: Bearer <token>".
-// Errors come back as ErrorResponse.
+// Errors come back as ErrorResponse. 503 means the CalDAV server could not
+// be reached; trying again later may work.
 package api
 
 import (
@@ -46,13 +47,19 @@ type TasksResponse struct {
 	Tasks []Task `json:"tasks"`
 }
 
-// AddRequest is the body of POST /tasks.
+// AddRequest is the body of POST /tasks. UID is optional; a client that
+// may retry (for example from an offline queue) sends its own, so a retry
+// of a capture that already got through answers 409 instead of creating
+// a duplicate.
 type AddRequest struct {
+	UID     string `json:"uid,omitempty"`
 	Summary string `json:"summary"`
 }
 
-// AddResponse answers POST /tasks with the list the task was added to.
+// AddResponse answers POST /tasks with the new task's UID and the list it
+// was added to.
 type AddResponse struct {
+	UID  string `json:"uid"`
 	List string `json:"list"`
 }
 

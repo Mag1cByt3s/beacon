@@ -17,7 +17,7 @@ import (
 type backend interface {
 	Tasks(ctx context.Context) ([]focus.Task, error)       // in focus order
 	Current(ctx context.Context) (focus.Task, bool, error) // ok false: nothing open
-	Add(ctx context.Context, summary string) (string, error)
+	Add(ctx context.Context, uid, summary string) (string, error)
 	Done(ctx context.Context) (next focus.Task, ok bool, err error)
 	Skip(ctx context.Context) (next focus.Task, ok bool, err error)
 }
@@ -83,8 +83,8 @@ func (d direct) Current(ctx context.Context) (focus.Task, bool, error) {
 	return task, ok, nil
 }
 
-func (d direct) Add(ctx context.Context, summary string) (string, error) {
-	return d.client.Create(ctx, d.defaultList, summary)
+func (d direct) Add(ctx context.Context, uid, summary string) (string, error) {
+	return d.client.Create(ctx, d.defaultList, uid, summary)
 }
 
 // Done completes the first task in the queue and returns the one after it,

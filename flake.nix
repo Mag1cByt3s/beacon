@@ -22,7 +22,7 @@
           src = ./.;
           # Update this hash whenever go.mod or go.sum change:
           # set it to pkgs.lib.fakeHash, run `nix build`, copy the hash it prints.
-          vendorHash = "sha256-8dYZRrXI+tNvQwMGFGG20h7Bjt/YtPQoLlRTtBiFUkM=";
+          vendorHash = "sha256-rLbu1aA2+JcgRlqTeiLacCzSlEVzqZLH4fPBkqPNQMM=";
           subPackages = [ "cmd/t" ];
           env.CGO_ENABLED = 0;
           ldflags = [

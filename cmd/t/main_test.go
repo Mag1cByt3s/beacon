@@ -1,9 +1,12 @@
 package main
 
 import (
+	"context"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/Mag1cByt3s/beacon/internal/api"
 	"github.com/Mag1cByt3s/beacon/internal/focus"
 )
 
@@ -12,23 +15,23 @@ func TestFormatTask(t *testing.T) {
 	date := func(m time.Month, d int) time.Time { return time.Date(2026, m, d, 0, 0, 0, 0, time.UTC) }
 
 	tests := []struct {
-		name     string
-		task     focus.Task
-		showList bool
-		want     string
+		name string
+		task focus.Task
+		want string
 	}{
-		{"no due date", focus.Task{Summary: "Read"}, false, "Read"},
-		{"overdue", focus.Task{Summary: "Pay rent", Due: now.Add(-time.Hour)}, false, "Pay rent (overdue)"},
-		{"due today all day", focus.Task{Summary: "Call", Due: date(10, 3), DueAllDay: true}, false, "Call (due today)"},
-		{"due today with time", focus.Task{Summary: "Call", Due: now.Add(3 * time.Hour)}, false, "Call (due today 15:00)"},
-		{"due tomorrow", focus.Task{Summary: "Bin", Due: date(10, 4), DueAllDay: true}, false, "Bin (due tomorrow)"},
-		{"due later", focus.Task{Summary: "Tax", Due: date(10, 12), DueAllDay: true}, false, "Tax (due Mon 12 Oct)"},
-		{"due next year", focus.Task{Summary: "Tax", Due: time.Date(2027, 1, 4, 0, 0, 0, 0, time.UTC), DueAllDay: true}, false, "Tax (due Mon 4 Jan 2027)"},
-		{"with list", focus.Task{Summary: "Milk", List: "Groceries"}, true, "Milk [Groceries]"},
+		{"no due date", focus.Task{Summary: "Read"}, "Read"},
+		{"overdue", focus.Task{Summary: "Pay rent", Due: now.Add(-time.Hour)}, "Pay rent (overdue)"},
+		{"due today all day", focus.Task{Summary: "Call", Due: date(10, 3), DueAllDay: true}, "Call (due today)"},
+		{"due today with time", focus.Task{Summary: "Call", Due: now.Add(3 * time.Hour)}, "Call (due today 15:00)"},
+		{"due tomorrow", focus.Task{Summary: "Bin", Due: date(10, 4), DueAllDay: true}, "Bin (due tomorrow)"},
+		{"due later", focus.Task{Summary: "Tax", Due: date(10, 12), DueAllDay: true}, "Tax (due Mon 12 Oct)"},
+		{"due next year", focus.Task{Summary: "Tax", Due: time.Date(2027, 1, 4, 0, 0, 0, 0, time.UTC), DueAllDay: true}, "Tax (due Mon 4 Jan 2027)"},
+		{"default list is not shown", focus.Task{Summary: "Read", List: "todo"}, "Read"},
+		{"other list is shown", focus.Task{Summary: "Milk", List: "Groceries"}, "Milk [Groceries]"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := formatTask(tt.task, now, tt.showList); got != tt.want {
+			if got := formatTask(tt.task, now, "Todo"); got != tt.want {
 				t.Errorf("formatTask = %q, want %q", got, tt.want)
 			}
 		})
@@ -47,6 +50,8 @@ func TestParseArgs(t *testing.T) {
 		{name: "list", args: []string{"list"}, wantName: "list"},
 		{name: "focus", args: []string{"focus"}, wantName: "focus"},
 		{name: "done", args: []string{"done"}, wantName: "done"},
+		{name: "skip", args: []string{"skip"}, wantName: "skip"},
+		{name: "skip with extra words", args: []string{"skip", "lunch"}, wantErr: true},
 		{name: "help", args: []string{"help"}, wantName: "help"},
 		{name: "--help", args: []string{"--help"}, wantName: "help"},
 		{name: "-h", args: []string{"-h"}, wantName: "help"},
@@ -79,6 +84,78 @@ func TestParseArgs(t *testing.T) {
 			}
 			if got.name != tt.wantName || got.summary != tt.wantSummary {
 				t.Errorf("parseArgs(%q) = %+v, want name %q summary %q", tt.args, got, tt.wantName, tt.wantSummary)
+			}
+		})
+	}
+}
+
+// fakeBackend returns canned answers, so execute can be tested without
+// any server.
+type fakeBackend struct {
+	tasks []focus.Task
+	err   error
+	added string
+}
+
+func (f *fakeBackend) Tasks(ctx context.Context) ([]focus.Task, error) { return f.tasks, f.err }
+
+func (f *fakeBackend) Current(ctx context.Context) (focus.Task, bool, error) {
+	if len(f.tasks) == 0 {
+		return focus.Task{}, false, f.err
+	}
+	return f.tasks[0], true, f.err
+}
+
+func (f *fakeBackend) Add(ctx context.Context, summary string) (string, error) {
+	f.added = summary
+	return "Todo", f.err
+}
+
+func (f *fakeBackend) Done(ctx context.Context) (focus.Task, bool, error) {
+	if f.err != nil || len(f.tasks) < 2 {
+		return focus.Task{}, false, f.err
+	}
+	return f.tasks[1], true, nil
+}
+
+func (f *fakeBackend) Skip(ctx context.Context) (focus.Task, bool, error) { return f.Done(ctx) }
+
+func TestExecute(t *testing.T) {
+	two := []focus.Task{{Summary: "Pay rent", List: "Todo"}, {Summary: "Milk", List: "Groceries"}}
+	conflict := &api.ConflictError{Message: "changed", Current: &focus.Task{Summary: "Oat milk"}}
+
+	tests := []struct {
+		name    string
+		cmd     command
+		backend *fakeBackend
+		want    string // output
+		wantErr string // part of the error message
+	}{
+		{"list", command{name: "list"}, &fakeBackend{tasks: two}, "Pay rent\nMilk [Groceries]\n", ""},
+		{"list empty", command{name: "list"}, &fakeBackend{}, "No open tasks.\n", ""},
+		{"focus", command{name: "focus"}, &fakeBackend{tasks: two}, "Pay rent\n", ""},
+		{"focus empty", command{name: "focus"}, &fakeBackend{}, "No open tasks.\n", ""},
+		{"done shows next", command{name: "done"}, &fakeBackend{tasks: two}, "Milk [Groceries]\n", ""},
+		{"done last one", command{name: "done"}, &fakeBackend{tasks: two[:1]}, "No open tasks.\n", ""},
+		{"skip shows next", command{name: "skip"}, &fakeBackend{tasks: two}, "Milk [Groceries]\n", ""},
+		{"add", command{name: "add", summary: "buy coffee"}, &fakeBackend{}, "Added to Todo.\n", ""},
+		{"done conflict", command{name: "done"}, &fakeBackend{err: conflict}, "",
+			`"Oat milk" was changed elsewhere since it became current, so it was left alone; run t done again`},
+		{"unauthorized", command{name: "focus"}, &fakeBackend{err: api.ErrUnauthorized}, "", "check BEACON_TOKEN"},
+		{"skip without server", command{name: "skip"}, &fakeBackend{err: errSkipNeedsServer}, "", "BEACON_SERVER_URL"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var out strings.Builder
+			err := execute(context.Background(), tt.backend, tt.cmd, &out, "Todo")
+			if tt.wantErr == "" && err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if tt.wantErr != "" && (err == nil || !strings.Contains(err.Error(), tt.wantErr)) {
+				t.Fatalf("err = %v, want it to contain %q", err, tt.wantErr)
+			}
+			if out.String() != tt.want {
+				t.Errorf("output = %q, want %q", out.String(), tt.want)
 			}
 		})
 	}

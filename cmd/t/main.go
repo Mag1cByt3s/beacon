@@ -1,11 +1,15 @@
 // Command t is beacon's command line: one task at a time.
 //
-//	t                 show the next task (same as t focus)
+//	t                 show the current task (same as t focus)
 //	t buy coffee      add a task
-//	t list            open tasks, best first
-//	t focus           only the next task, on one line
-//	t done            complete the next task and show the one after it
+//	t list            open tasks, current first
+//	t focus           only the current task, on one line
+//	t done            complete the current task and show the next one
+//	t skip            skip the current task for now (server only)
 //	t add <words>     add a task that starts with a command word
+//
+// With BEACON_SERVER_URL set, t talks to the beacon server; otherwise it
+// talks to the CalDAV server directly.
 package main
 
 import (
@@ -17,26 +21,27 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Mag1cByt3s/beacon/internal/caldav"
+	"github.com/Mag1cByt3s/beacon/internal/api"
 	"github.com/Mag1cByt3s/beacon/internal/config"
 	"github.com/Mag1cByt3s/beacon/internal/focus"
 )
 
 const usage = `usage:
-  t                 show the next task
+  t                 show the current task
   t <words...>      add a task, e.g. t buy coffee
-  t list            show open tasks, best first
-  t focus           show only the next task
-  t done            complete the next task
+  t list            show open tasks, current first
+  t focus           show only the current task
+  t done            complete the current task
+  t skip            skip the current task for now
   t add <words...>  add a task that starts with a command word
 `
 
-// Each network call gets at most this long, so t never hangs the terminal.
+// Each command gets at most this long, so t never hangs the terminal.
 const timeout = 30 * time.Second
 
 // command is what the user asked for, decided from the arguments alone.
 type command struct {
-	name    string // "list", "focus", "done", "add" or "help"
+	name    string // "list", "focus", "done", "skip", "add" or "help"
 	summary string // title of the new task, only for "add"
 }
 
@@ -52,21 +57,20 @@ func run(args []string, out io.Writer) error {
 	if err != nil {
 		return err
 	}
-
-	switch cmd.name {
-	case "help":
+	if cmd.name == "help" {
 		fmt.Fprint(out, usage)
 		return nil
-	case "list":
-		return list(out)
-	case "focus":
-		return showFocus(out)
-	case "done":
-		return done(out)
-	case "add":
-		return add(out, cmd.summary)
 	}
-	return fmt.Errorf("unknown command %q", cmd.name) // not reached
+
+	cfg := config.Load()
+	b, err := newBackend(cfg)
+	if err != nil {
+		return err
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel() // defer runs when run returns
+	return execute(ctx, b, cmd, out, cfg.DefaultList)
 }
 
 // parseArgs decides what to do. A first word that is a command runs that
@@ -79,7 +83,7 @@ func parseArgs(args []string) (command, error) {
 
 	first := args[0]
 	switch first {
-	case "list", "focus", "done", "help":
+	case "list", "focus", "done", "skip", "help":
 		if len(args) > 1 {
 			return command{}, fmt.Errorf("%q takes no extra words; to add this as a task, use: t add %s",
 				first, strings.Join(args, " "))
@@ -103,138 +107,79 @@ func parseArgs(args []string) (command, error) {
 	return command{name: "add", summary: summary}, nil
 }
 
-func list(out io.Writer) error {
-	_, tasks, showList, err := loadTasks()
-	if err != nil {
-		return err
-	}
+// execute runs cmd against b and prints the result. Tasks from lists other
+// than defaultList are marked with their list name.
+func execute(ctx context.Context, b backend, cmd command, out io.Writer, defaultList string) error {
 	now := time.Now()
-	queue := focus.Queue(tasks, now)
-	if len(queue) == 0 {
-		fmt.Fprintln(out, "No open tasks.")
-		return nil
-	}
-	for _, task := range queue {
-		fmt.Fprintln(out, formatTask(task, now, showList))
-	}
-	return nil
-}
-
-func showFocus(out io.Writer) error {
-	_, tasks, showList, err := loadTasks()
-	if err != nil {
-		return err
-	}
-	printNext(out, tasks, showList)
-	return nil
-}
-
-// done completes the task t focus would show, then shows the next one.
-func done(out io.Writer) error {
-	client, tasks, showList, err := loadTasks()
-	if err != nil {
-		return err
-	}
-	current, ok := focus.Next(tasks, time.Now())
-	if !ok {
-		fmt.Fprintln(out, "No open tasks.")
-		return nil
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
-	if err := client.Complete(ctx, current); err != nil {
-		return err
-	}
-
-	// Show the next task from what was already read, without asking the
-	// server again.
-	var rest []focus.Task
-	for _, task := range tasks {
-		if task.UID != current.UID || task.Path != current.Path {
-			rest = append(rest, task)
+	show := func(task focus.Task, ok bool) {
+		if !ok {
+			fmt.Fprintln(out, "No open tasks.")
+			return
 		}
-	}
-	printNext(out, rest, showList)
-	return nil
-}
-
-func add(out io.Writer, summary string) error {
-	cfg, client, err := connect()
-	if err != nil {
-		return err
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
-
-	listName, err := client.Create(ctx, cfg.DefaultList, summary)
-	if err != nil {
-		return err
-	}
-	fmt.Fprintf(out, "Added to %s.\n", listName)
-	return nil
-}
-
-func printNext(out io.Writer, tasks []focus.Task, showList bool) {
-	now := time.Now()
-	next, ok := focus.Next(tasks, now)
-	if !ok {
-		fmt.Fprintln(out, "No open tasks.")
-		return
-	}
-	fmt.Fprintln(out, formatTask(next, now, showList))
-}
-
-// connect reads the configuration and creates a CalDAV client.
-func connect() (config.Config, *caldav.Client, error) {
-	cfg := config.Load()
-	if err := cfg.CheckCalDAV(); err != nil {
-		return config.Config{}, nil, err
+		fmt.Fprintln(out, formatTask(task, now, defaultList))
 	}
 
-	var err error
-	password := ""
-	if cfg.User != "" {
-		password, err = cfg.Password()
+	switch cmd.name {
+	case "list":
+		tasks, err := b.Tasks(ctx)
 		if err != nil {
-			return config.Config{}, nil, err
+			return err
 		}
-	}
+		if len(tasks) == 0 {
+			show(focus.Task{}, false)
+		}
+		for _, task := range tasks {
+			show(task, true)
+		}
 
-	client, err := caldav.NewClient(cfg.CalDAVURL, cfg.User, password, cfg.Lists)
-	if err != nil {
-		return config.Config{}, nil, err
-	}
-	return cfg, client, nil
-}
+	case "focus":
+		task, ok, err := b.Current(ctx)
+		if err != nil {
+			return err
+		}
+		show(task, ok)
 
-// loadTasks connects and fetches open tasks from the focus lists.
-// showList is true when more than one list is configured, so the output
-// can say where each task comes from.
-func loadTasks() (client *caldav.Client, tasks []focus.Task, showList bool, err error) {
-	cfg, client, err := connect()
-	if err != nil {
-		return nil, nil, false, err
-	}
+	case "done":
+		next, ok, err := b.Done(ctx)
+		// errors.As checks whether err is (or wraps) a *api.ConflictError.
+		var conflict *api.ConflictError
+		if errors.As(err, &conflict) && conflict.Current != nil {
+			return fmt.Errorf("%q was changed elsewhere since it became current, so it was left alone; run t done again to complete it as it is now",
+				conflict.Current.Summary)
+		}
+		if err != nil {
+			return err
+		}
+		show(next, ok)
 
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel() // defer runs when loadTasks returns
+	case "skip":
+		next, ok, err := b.Skip(ctx)
+		if err != nil {
+			return err
+		}
+		show(next, ok)
 
-	tasks, err = client.OpenTasks(ctx)
-	if err != nil {
-		return nil, nil, false, err
+	case "add":
+		list, err := b.Add(ctx, cmd.summary)
+		if err != nil {
+			return err
+		}
+		fmt.Fprintf(out, "Added to %s.\n", list)
+
+	default:
+		return fmt.Errorf("unknown command %q", cmd.name)
 	}
-	return client, tasks, len(cfg.Lists) > 1, nil
+	return nil
 }
 
 // formatTask renders a task as one calm line, for example
 // "Pay rent (due tomorrow)" or "Milk [Groceries]".
-func formatTask(task focus.Task, now time.Time, showList bool) string {
+func formatTask(task focus.Task, now time.Time, defaultList string) string {
 	line := task.Summary
 	if due := describeDue(task, now); due != "" {
 		line += " (" + due + ")"
 	}
-	if showList {
+	if task.List != "" && !strings.EqualFold(task.List, defaultList) {
 		line += " [" + task.List + "]"
 	}
 	return line

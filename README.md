@@ -52,6 +52,8 @@ t focus                   # only the current task
 t done                    # complete the current task, then show the next one
 t skip                    # skip the current task for now (server only)
 t add list the receipts   # add a task that starts with a command word
+t rm coffee               # remove the task whose title matches, for good
+t undo                    # remove the task you added last, for good
 t prompt                  # the current task or nothing, within 300 ms
 ```
 
@@ -64,6 +66,18 @@ on the phone.
 `t done` never overwrites a task that was changed elsewhere (for example on
 the phone). With the server it tells you what the task looks like now; run
 `t done` again to complete it as it is.
+
+### Removing tasks
+
+`t rm <words>` removes an open task for good: the one whose title is exactly
+the words, or else the only one whose title contains them (at least 3
+letters). If several match, they are listed and nothing is removed.
+`t undo` removes the task you added last; if it is still waiting in the
+offline queue, it is just taken out. Neither removes a task that was changed
+elsewhere in the meantime, or a recurring one.
+
+A single word that looks like a mistyped command (`t lsit`) is not added;
+`t add lsit` adds it anyway.
 
 ### Offline captures
 
@@ -99,6 +113,7 @@ Every endpoint except `/healthz` needs `Authorization: Bearer <BEACON_TOKEN>`.
 | `GET /current` | the current task, or `null` |
 | `GET /tasks` | open tasks in focus order |
 | `POST /tasks` | add `{"summary": "buy coffee"}` to the default list; an optional `"uid"` makes retries safe (`409` if it exists) |
+| `DELETE /tasks/{uid}` | remove an open task for good; with `If-Match: "<etag>"` only that version (`409` if it changed, `404` if not open) |
 | `POST /current/done` | complete the current task; `409` if it changed since it became current |
 | `POST /current/skip` | skip the current task and pick the next |
 

@@ -1,25 +1,11 @@
 package caldav
 
 import (
-	"strings"
 	"testing"
 	"time"
 
-	"github.com/emersion/go-ical"
+	"github.com/Mag1cByt3s/beacon/internal/caldav/caldavtest"
 )
-
-// parse decodes an iCalendar string. Lines are joined with CRLF as the
-// format requires.
-func parse(t *testing.T, lines ...string) *ical.Calendar {
-	t.Helper()
-	all := append([]string{"BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//beacon//test//EN"}, lines...)
-	all = append(all, "END:VCALENDAR", "")
-	cal, err := ical.NewDecoder(strings.NewReader(strings.Join(all, "\r\n"))).Decode()
-	if err != nil {
-		t.Fatalf("decode: %v", err)
-	}
-	return cal
-}
 
 func TestTaskFromCalendarOpenState(t *testing.T) {
 	tests := []struct {
@@ -40,7 +26,7 @@ func TestTaskFromCalendarOpenState(t *testing.T) {
 			lines := []string{"BEGIN:VTODO", "UID:1", "DTSTAMP:20261001T100000Z", "SUMMARY:x"}
 			lines = append(lines, tt.extra...)
 			lines = append(lines, "END:VTODO")
-			_, ok := taskFromCalendar(parse(t, lines...), "Todo")
+			_, ok := taskFromCalendar(caldavtest.Parse(t, lines...), "Todo")
 			if ok != tt.wantOK {
 				t.Errorf("ok = %v, want %v", ok, tt.wantOK)
 			}
@@ -49,7 +35,7 @@ func TestTaskFromCalendarOpenState(t *testing.T) {
 }
 
 func TestTaskFromCalendarFields(t *testing.T) {
-	cal := parse(t,
+	cal := caldavtest.Parse(t,
 		"BEGIN:VTODO",
 		"UID:abc-123",
 		"DTSTAMP:20261001T100000Z",
@@ -97,7 +83,7 @@ func TestTaskFromCalendarDates(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			cal := parse(t, "BEGIN:VTODO", "UID:1", "DTSTAMP:20261001T100000Z", "SUMMARY:x", tt.due, "END:VTODO")
+			cal := caldavtest.Parse(t, "BEGIN:VTODO", "UID:1", "DTSTAMP:20261001T100000Z", "SUMMARY:x", tt.due, "END:VTODO")
 			task, ok := taskFromCalendar(cal, "Todo")
 			if !ok {
 				t.Fatal("ok = false; a bad date must not hide the task")
@@ -113,7 +99,7 @@ func TestTaskFromCalendarDates(t *testing.T) {
 }
 
 func TestTaskFromCalendarRecurring(t *testing.T) {
-	cal := parse(t,
+	cal := caldavtest.Parse(t,
 		"BEGIN:VTODO", "UID:r", "DTSTAMP:20261001T100000Z", "SUMMARY:Water plants",
 		"RRULE:FREQ=WEEKLY", "DUE:20261005T090000Z", "END:VTODO",
 	)
@@ -125,7 +111,7 @@ func TestTaskFromCalendarRecurring(t *testing.T) {
 
 func TestTaskFromCalendarOverridePicksMaster(t *testing.T) {
 	// The override comes first on purpose; the master must still win.
-	cal := parse(t,
+	cal := caldavtest.Parse(t,
 		"BEGIN:VTODO", "UID:r", "DTSTAMP:20261001T100000Z", "SUMMARY:Override",
 		"RECURRENCE-ID:20261005T090000Z", "END:VTODO",
 		"BEGIN:VTODO", "UID:r", "DTSTAMP:20261001T100000Z", "SUMMARY:Master",
@@ -138,14 +124,14 @@ func TestTaskFromCalendarOverridePicksMaster(t *testing.T) {
 }
 
 func TestTaskFromCalendarNoTodo(t *testing.T) {
-	cal := parse(t, "BEGIN:VEVENT", "UID:e", "DTSTAMP:20261001T100000Z", "DTSTART:20261001T100000Z", "END:VEVENT")
+	cal := caldavtest.Parse(t, "BEGIN:VEVENT", "UID:e", "DTSTAMP:20261001T100000Z", "DTSTART:20261001T100000Z", "END:VEVENT")
 	if _, ok := taskFromCalendar(cal, "Todo"); ok {
 		t.Error("ok = true for a calendar without VTODO")
 	}
 }
 
 func TestTaskFromCalendarEmptySummary(t *testing.T) {
-	cal := parse(t, "BEGIN:VTODO", "UID:1", "DTSTAMP:20261001T100000Z", "END:VTODO")
+	cal := caldavtest.Parse(t, "BEGIN:VTODO", "UID:1", "DTSTAMP:20261001T100000Z", "END:VTODO")
 	task, _ := taskFromCalendar(cal, "Todo")
 	if task.Summary != "(no title)" {
 		t.Errorf("Summary = %q, want (no title)", task.Summary)

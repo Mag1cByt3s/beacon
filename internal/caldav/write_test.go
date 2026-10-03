@@ -3,7 +3,6 @@ package caldav
 import (
 	"context"
 	"errors"
-	"fmt"
 	"reflect"
 	"slices"
 	"strings"
@@ -11,15 +10,15 @@ import (
 	"time"
 
 	"github.com/emersion/go-ical"
-	"github.com/emersion/go-webdav/caldav"
 
+	"github.com/Mag1cByt3s/beacon/internal/caldav/caldavtest"
 	"github.com/Mag1cByt3s/beacon/internal/focus"
 )
 
-func newTestClient(t *testing.T) (*Client, *fakeBackend) {
+func newTestClient(t *testing.T) (*Client, *caldavtest.Backend) {
 	t.Helper()
-	srv, backend := newTestServer(t)
-	c, err := NewClient(srv.URL+"/", "alice", "test-password", []string{"Todo"})
+	srv, backend := caldavtest.NewServer(t)
+	c, err := NewClient(srv.URL+"/", caldavtest.User, caldavtest.Password, []string{"Todo"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -53,7 +52,7 @@ func TestCreate(t *testing.T) {
 		t.Errorf("list name = %q, want Todo", name)
 	}
 
-	objects := backend.objects["/alice/calendars/todo/"]
+	objects := backend.Objects[caldavtest.TodoPath]
 	if len(objects) != 3 {
 		t.Fatalf("todo list has %d objects, want 3", len(objects))
 	}
@@ -61,7 +60,7 @@ func TestCreate(t *testing.T) {
 	todo := obj.Data.Children[0]
 
 	uid := text(todo.Props, ical.PropUID)
-	if obj.Path != "/alice/calendars/todo/"+uid+".ics" {
+	if obj.Path != caldavtest.TodoPath+uid+".ics" {
 		t.Errorf("path = %q, want it named after UID %q", obj.Path, uid)
 	}
 	if got := text(todo.Props, ical.PropSummary); got != "Buy coffee, beans; fresh" {
@@ -100,7 +99,7 @@ func TestCreateUnknownList(t *testing.T) {
 func TestCreateNeverOverwrites(t *testing.T) {
 	c, _ := newTestClient(t)
 	// Try to "create" on top of an existing object, as a UID collision would.
-	err := c.put(context.Background(), "/alice/calendars/todo/1.ics",
+	err := c.put(context.Background(), caldavtest.TodoPath+"1.ics",
 		newTodo("open", "x", time.Now()), "If-None-Match", "*")
 	if !errors.Is(err, ErrConflict) {
 		t.Errorf("err = %v, want ErrConflict", err)
@@ -111,30 +110,29 @@ func TestComplete(t *testing.T) {
 	c, backend := newTestClient(t)
 
 	// A task as an iPhone might store it, with properties beacon does not know.
-	backend.objects["/alice/calendars/todo/"] = append(backend.objects["/alice/calendars/todo/"],
-		object(t, "/alice/calendars/todo/rich.ics",
-			"BEGIN:VTODO",
-			"UID:rich",
-			"DTSTAMP:20261001T100000Z",
-			"CREATED:20260901T100000Z",
-			"LAST-MODIFIED:20261001T100000Z",
-			"SUMMARY:Call the bank",
-			"DESCRIPTION:About the card",
-			"DUE;VALUE=DATE:20261010",
-			"PRIORITY:5",
-			"STATUS:NEEDS-ACTION",
-			"X-APPLE-SORT-ORDER:123456",
-			"X-CUSTOM;X-PARAM=keep:me",
-			"BEGIN:VALARM",
-			"ACTION:DISPLAY",
-			"DESCRIPTION:Reminder",
-			"TRIGGER;VALUE=DATE-TIME:20261010T080000Z",
-			"END:VALARM",
-			"END:VTODO",
-		))
-	before := backend.objects["/alice/calendars/todo/"][2].Data.Children[0]
+	path := caldavtest.TodoPath + "rich.ics"
+	backend.Add(t, path,
+		"BEGIN:VTODO",
+		"UID:rich",
+		"DTSTAMP:20261001T100000Z",
+		"CREATED:20260901T100000Z",
+		"LAST-MODIFIED:20261001T100000Z",
+		"SUMMARY:Call the bank",
+		"DESCRIPTION:About the card",
+		"DUE;VALUE=DATE:20261010",
+		"PRIORITY:5",
+		"STATUS:NEEDS-ACTION",
+		"X-APPLE-SORT-ORDER:123456",
+		"X-CUSTOM;X-PARAM=keep:me",
+		"BEGIN:VALARM",
+		"ACTION:DISPLAY",
+		"DESCRIPTION:Reminder",
+		"TRIGGER;VALUE=DATE-TIME:20261010T080000Z",
+		"END:VALARM",
+		"END:VTODO",
+	)
 	beforeProps := ical.Props{}
-	for name, values := range before.Props {
+	for name, values := range backend.Todo(path).Props {
 		beforeProps[name] = slices.Clone(values)
 	}
 
@@ -143,9 +141,7 @@ func TestComplete(t *testing.T) {
 		t.Fatalf("Complete: %v", err)
 	}
 
-	after, _, _ := backend.find("/alice/calendars/todo/rich.ics")
-	todo := after.Data.Children[0]
-
+	todo := backend.Todo(path)
 	if got := text(todo.Props, ical.PropStatus); got != "COMPLETED" {
 		t.Errorf("STATUS = %q, want COMPLETED", got)
 	}
@@ -193,13 +189,13 @@ func TestCompleteChangedSinceRead(t *testing.T) {
 	task := openTask(t, c, "open")
 
 	// Someone edits the task on the phone after beacon listed it.
-	editOnPhone(t, backend, "/alice/calendars/todo/1.ics", "Open task, edited")
+	backend.Edit(t, caldavtest.TodoPath+"1.ics", "Open task, edited")
 
 	err := c.Complete(context.Background(), task)
 	if !errors.Is(err, ErrConflict) {
 		t.Fatalf("err = %v, want ErrConflict", err)
 	}
-	assertUntouched(t, backend, "/alice/calendars/todo/1.ics", "Open task, edited")
+	assertUntouched(t, backend, caldavtest.TodoPath+"1.ics", "Open task, edited")
 }
 
 func TestCompleteChangedDuringWrite(t *testing.T) {
@@ -208,24 +204,24 @@ func TestCompleteChangedDuringWrite(t *testing.T) {
 
 	// The edit lands between beacon's GET and its PUT, so only If-Match
 	// can catch it.
-	backend.afterGet = func(path string) {
-		backend.afterGet = nil
-		editOnPhone(t, backend, path, "Edited at the worst moment")
+	backend.AfterGet = func(path string) {
+		backend.AfterGet = nil
+		backend.Edit(t, path, "Edited at the worst moment")
 	}
 
 	err := c.Complete(context.Background(), task)
 	if !errors.Is(err, ErrConflict) {
 		t.Fatalf("err = %v, want ErrConflict", err)
 	}
-	assertUntouched(t, backend, "/alice/calendars/todo/1.ics", "Edited at the worst moment")
+	assertUntouched(t, backend, caldavtest.TodoPath+"1.ics", "Edited at the worst moment")
 }
 
 func TestCompleteRefusesRecurring(t *testing.T) {
 	c, backend := newTestClient(t)
-	backend.objects["/alice/calendars/todo/"] = append(backend.objects["/alice/calendars/todo/"],
-		object(t, "/alice/calendars/todo/weekly.ics",
-			"BEGIN:VTODO", "UID:weekly", "DTSTAMP:20261001T100000Z", "SUMMARY:Water plants",
-			"RRULE:FREQ=WEEKLY", "END:VTODO"))
+	path := caldavtest.TodoPath + "weekly.ics"
+	backend.Add(t, path,
+		"BEGIN:VTODO", "UID:weekly", "DTSTAMP:20261001T100000Z", "SUMMARY:Water plants",
+		"RRULE:FREQ=WEEKLY", "END:VTODO")
 
 	// Refused straight away when the task is known to be recurring ...
 	task := openTask(t, c, "weekly")
@@ -238,7 +234,7 @@ func TestCompleteRefusesRecurring(t *testing.T) {
 	if err := c.Complete(context.Background(), task); !errors.Is(err, ErrRecurring) {
 		t.Errorf("err = %v, want ErrRecurring", err)
 	}
-	if obj, _, _ := backend.find("/alice/calendars/todo/weekly.ics"); obj.ETag != task.ETag {
+	if obj, _ := backend.Find(path); obj.ETag != task.ETag {
 		t.Error("recurring task was written")
 	}
 }
@@ -254,25 +250,9 @@ func TestNewUID(t *testing.T) {
 	}
 }
 
-// editOnPhone replaces an object's summary and gives it a new ETag, as a
-// change from another client would.
-func editOnPhone(t *testing.T, b *fakeBackend, path, summary string) {
+func assertUntouched(t *testing.T, b *caldavtest.Backend, path, wantSummary string) {
 	t.Helper()
-	obj, i, ok := b.find(path)
-	if !ok {
-		t.Fatalf("%s not found", path)
-	}
-	obj.Data.Children[0].Props.SetText(ical.PropSummary, summary)
-	b.version++
-	obj.ETag = fmt.Sprintf("phone-edit-%d", b.version)
-	calPath := path[:strings.LastIndex(path, "/")+1]
-	b.objects[calPath][i] = obj
-}
-
-func assertUntouched(t *testing.T, b *fakeBackend, path, wantSummary string) {
-	t.Helper()
-	obj, _, _ := b.find(path)
-	todo := obj.Data.Children[0]
+	todo := b.Todo(path)
 	if got := text(todo.Props, ical.PropSummary); got != wantSummary {
 		t.Errorf("SUMMARY = %q, want the phone's edit %q", got, wantSummary)
 	}
@@ -280,6 +260,3 @@ func assertUntouched(t *testing.T, b *fakeBackend, path, wantSummary string) {
 		t.Error("the task was completed despite the conflict")
 	}
 }
-
-// Make sure the fake backend still satisfies go-webdav's interface.
-var _ caldav.Backend = (*fakeBackend)(nil)

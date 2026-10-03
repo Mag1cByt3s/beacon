@@ -23,7 +23,7 @@ func (a *app) add(ctx context.Context, summary string) error {
 	if !a.offline || a.queue == nil {
 		addCtx, cancel := context.WithTimeout(ctx, addTimeout)
 		defer cancel()
-		list, err := a.b.Add(addCtx, uid, summary)
+		list, _, err := a.b.Add(addCtx, uid, summary)
 		if err == nil {
 			fmt.Fprintf(a.out, "Added to %s.\n", list)
 			return nil
@@ -51,7 +51,7 @@ func (a *app) flush() {
 	defer cancel()
 
 	_, err := a.queue.Flush(ctx, func(ctx context.Context, e queue.Entry) error {
-		_, err := a.b.Add(ctx, e.UID, e.Summary)
+		_, _, err := a.b.Add(ctx, e.UID, e.Summary)
 		if alreadyAdded(err) {
 			return nil // an earlier try got through after all
 		}

@@ -5,6 +5,8 @@
 //	GET  /current        CurrentResponse
 //	GET  /tasks          TasksResponse, in focus order
 //	POST /tasks          AddRequest -> 201 AddResponse; 409 if the uid exists
+//	DELETE /tasks/{uid}  DeleteResponse; optional If-Match: "<etag>";
+//	                     404 if no such open task, 409 if it changed
 //	POST /current/done   DoneResponse, or 409 ErrorResponse if the task changed
 //	POST /current/skip   SkipResponse
 //
@@ -35,6 +37,10 @@ type Task struct {
 
 	// omitzero (Go 1.24+) leaves out a zero time.Time, i.e. "unknown".
 	Created time.Time `json:"created,omitzero"`
+
+	// ETag is the version of the task in CalDAV. Sending it back in
+	// If-Match makes sure only that version is changed or deleted.
+	ETag string `json:"etag,omitempty"`
 }
 
 // CurrentResponse answers GET /current. Task is null when nothing is open.
@@ -56,11 +62,17 @@ type AddRequest struct {
 	Summary string `json:"summary"`
 }
 
-// AddResponse answers POST /tasks with the new task's UID and the list it
-// was added to.
+// AddResponse answers POST /tasks with the new task's UID, its ETag (if
+// the CalDAV server sent one) and the list it was added to.
 type AddResponse struct {
 	UID  string `json:"uid"`
+	ETag string `json:"etag,omitempty"`
 	List string `json:"list"`
+}
+
+// DeleteResponse answers DELETE /tasks/{uid} with the removed task.
+type DeleteResponse struct {
+	Deleted *Task `json:"deleted"`
 }
 
 // DoneResponse answers POST /current/done: the completed task and the new
@@ -95,6 +107,7 @@ func FromFocus(t focus.Task) Task {
 		DueAllDay: t.DueAllDay,
 		Priority:  t.Priority,
 		Created:   t.Created,
+		ETag:      t.ETag,
 	}
 	switch {
 	case t.Due.IsZero():
@@ -118,6 +131,7 @@ func (t Task) Focus() focus.Task {
 		DueAllDay: t.DueAllDay,
 		Priority:  t.Priority,
 		Created:   t.Created,
+		ETag:      t.ETag,
 	}
 	if t.Due != "" {
 		var err error

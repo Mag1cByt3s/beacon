@@ -26,6 +26,10 @@ var ErrUnreachable = errors.New("unreachable")
 // attempt of the same capture already got through.
 var ErrExists = errors.New("a task with this uid already exists")
 
+// ErrNotFound means there is no open task with the given UID (it was
+// completed or removed already).
+var ErrNotFound = errors.New("no open task with this uid")
+
 // unreachableError keeps a human message while matching ErrUnreachable.
 type unreachableError struct{ msg string }
 
@@ -64,7 +68,7 @@ func NewClient(baseURL, token string) (*Client, error) {
 // Tasks returns the open tasks in focus order, current task first.
 func (c *Client) Tasks(ctx context.Context) ([]focus.Task, error) {
 	var resp TasksResponse
-	if err := c.do(ctx, http.MethodGet, "tasks", nil, &resp); err != nil {
+	if err := c.do(ctx, http.MethodGet, "tasks", nil, nil, &resp); err != nil {
 		return nil, err
 	}
 	tasks := make([]focus.Task, len(resp.Tasks))
@@ -77,32 +81,57 @@ func (c *Client) Tasks(ctx context.Context) ([]focus.Task, error) {
 // Current returns the current task. ok is false when nothing is open.
 func (c *Client) Current(ctx context.Context) (task focus.Task, ok bool, err error) {
 	var resp CurrentResponse
-	if err := c.do(ctx, http.MethodGet, "current", nil, &resp); err != nil {
+	if err := c.do(ctx, http.MethodGet, "current", nil, nil, &resp); err != nil {
 		return focus.Task{}, false, err
 	}
 	return optional(resp.Task)
 }
 
 // Add creates a task with the given UID and returns the name of the list
-// it went to. If a task with that UID already exists, it returns ErrExists.
-func (c *Client) Add(ctx context.Context, uid, summary string) (string, error) {
+// it went to and the new task's ETag (may be empty). If a task with that
+// UID already exists, it returns ErrExists.
+func (c *Client) Add(ctx context.Context, uid, summary string) (list, etag string, err error) {
 	var resp AddResponse
-	err := c.do(ctx, http.MethodPost, "tasks", AddRequest{UID: uid, Summary: summary}, &resp)
+	err = c.do(ctx, http.MethodPost, "tasks", nil, AddRequest{UID: uid, Summary: summary}, &resp)
 	var conflict *ConflictError
 	if errors.As(err, &conflict) {
-		return "", ErrExists
+		return "", "", ErrExists
 	}
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
-	return resp.List, nil
+	return resp.List, resp.ETag, nil
+}
+
+// Remove deletes the open task with this UID for good and returns it. With
+// etag set, only that version is deleted: if the task changed since, it
+// returns a *ConflictError. If there is no such open task, ErrNotFound.
+func (c *Client) Remove(ctx context.Context, uid, etag string) (focus.Task, error) {
+	header := http.Header{}
+	if etag != "" {
+		// ETags travel without quotes; the header needs them, unless the
+		// ETag is already quoted or weak (W/"...").
+		if !strings.HasPrefix(etag, `"`) && !strings.HasPrefix(etag, `W/"`) {
+			etag = `"` + etag + `"`
+		}
+		header.Set("If-Match", etag)
+	}
+	var resp DeleteResponse
+	err := c.do(ctx, http.MethodDelete, "tasks/"+url.PathEscape(uid), header, nil, &resp)
+	if err != nil {
+		return focus.Task{}, err
+	}
+	if resp.Deleted == nil {
+		return focus.Task{}, errors.New("the beacon server sent an unexpected answer")
+	}
+	return resp.Deleted.Focus(), nil
 }
 
 // Done completes the current task and returns the next one.
 // It returns a *ConflictError if the task changed since it became current.
 func (c *Client) Done(ctx context.Context) (next focus.Task, ok bool, err error) {
 	var resp DoneResponse
-	if err := c.do(ctx, http.MethodPost, "current/done", nil, &resp); err != nil {
+	if err := c.do(ctx, http.MethodPost, "current/done", nil, nil, &resp); err != nil {
 		return focus.Task{}, false, err
 	}
 	return optional(resp.Current)
@@ -112,7 +141,7 @@ func (c *Client) Done(ctx context.Context) (next focus.Task, ok bool, err error)
 // the next one.
 func (c *Client) Skip(ctx context.Context) (next focus.Task, ok bool, err error) {
 	var resp SkipResponse
-	if err := c.do(ctx, http.MethodPost, "current/skip", nil, &resp); err != nil {
+	if err := c.do(ctx, http.MethodPost, "current/skip", nil, nil, &resp); err != nil {
 		return focus.Task{}, false, err
 	}
 	return optional(resp.Current)
@@ -125,9 +154,10 @@ func optional(t *Task) (focus.Task, bool, error) {
 	return t.Focus(), true, nil
 }
 
-// do sends one request. in, if not nil, is sent as JSON; the answer is
-// decoded into out. Errors are turned into short messages for people.
-func (c *Client) do(ctx context.Context, method, path string, in, out any) error {
+// do sends one request with the extra header (may be nil). in, if not nil,
+// is sent as JSON; the answer is decoded into out. Errors are turned into
+// short messages for people.
+func (c *Client) do(ctx context.Context, method, path string, header http.Header, in, out any) error {
 	var body io.Reader
 	if in != nil {
 		data, err := json.Marshal(in)
@@ -140,6 +170,9 @@ func (c *Client) do(ctx context.Context, method, path string, in, out any) error
 	req, err := http.NewRequestWithContext(ctx, method, c.base.JoinPath(path).String(), body)
 	if err != nil {
 		return err
+	}
+	for name, values := range header {
+		req.Header[name] = values
 	}
 	req.Header.Set("Authorization", "Bearer "+c.token)
 	if in != nil {
@@ -168,6 +201,11 @@ func (c *Client) do(ctx context.Context, method, path string, in, out any) error
 	msg := strings.TrimSpace(errResp.Error)
 	if msg == "" {
 		msg = resp.Status
+	}
+
+	// Only a DELETE names one task; any other 404 is a server problem.
+	if resp.StatusCode == http.StatusNotFound && method == http.MethodDelete {
+		return ErrNotFound
 	}
 
 	switch resp.StatusCode {

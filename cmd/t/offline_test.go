@@ -72,7 +72,7 @@ func unreachableAPI(t *testing.T) error {
 	srv := httptest.NewServer(nil)
 	srv.Close()
 	c, _ := api.NewClient(srv.URL, "token")
-	_, err := c.Add(context.Background(), caldav.NewUID(), "x")
+	_, _, err := c.Add(context.Background(), caldav.NewUID(), "x")
 	if !errors.Is(err, api.ErrUnreachable) {
 		t.Fatalf("setup: %v", err)
 	}
@@ -165,7 +165,7 @@ func flushAgainst(t *testing.T, b backend, dav *caldavtest.Backend) {
 		q.Append(queue.Entry{UID: uid, Summary: "capture " + string(rune('A'+i))})
 	}
 	// The first capture got through before, but t never heard back.
-	if _, err := b.Add(context.Background(), uids[0], "capture A"); err != nil {
+	if _, _, err := b.Add(context.Background(), uids[0], "capture A"); err != nil {
 		t.Fatal(err)
 	}
 

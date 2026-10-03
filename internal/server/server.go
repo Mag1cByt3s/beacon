@@ -29,6 +29,7 @@ type Tasks interface {
 	OpenTasks(ctx context.Context) ([]focus.Task, error)
 	Create(ctx context.Context, list, uid, summary string) (listName, etag string, err error)
 	Complete(ctx context.Context, task focus.Task) error
+	Delete(ctx context.Context, task focus.Task) error
 }
 
 // Server handles API requests.
@@ -65,6 +66,7 @@ func (s *Server) Handler() http.Handler {
 	protected.HandleFunc("GET /current", s.getCurrent)
 	protected.HandleFunc("GET /tasks", s.getTasks)
 	protected.HandleFunc("POST /tasks", s.addTask)
+	protected.HandleFunc("DELETE /tasks/{uid}", s.deleteTask)
 	protected.HandleFunc("POST /current/done", s.done)
 	protected.HandleFunc("POST /current/skip", s.skip)
 
@@ -150,7 +152,7 @@ func (s *Server) addTask(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Adding a task does not touch the focus state, so no lock is needed.
-	list, _, err := s.tasks.Create(ctx, s.defaultList, uid, summary)
+	list, etag, err := s.tasks.Create(ctx, s.defaultList, uid, summary)
 	switch {
 	case errors.Is(err, caldav.ErrInvalidUID):
 		writeJSON(w, http.StatusBadRequest, api.ErrorResponse{Error: err.Error()})
@@ -164,7 +166,93 @@ func (s *Server) addTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.log.Info("task added", "uid", uid, "list", list)
-	writeJSON(w, http.StatusCreated, api.AddResponse{UID: uid, List: list})
+	writeJSON(w, http.StatusCreated, api.AddResponse{UID: uid, ETag: etag, List: list})
+}
+
+// deleteTask removes an open task for good. With an If-Match header, only
+// that version of the task is removed.
+func (s *Server) deleteTask(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), requestTimeout)
+	defer cancel()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// PathValue returns the {uid} part of the "DELETE /tasks/{uid}" pattern.
+	uid := r.PathValue("uid")
+	tasks, _, cur, err := s.focusState(ctx)
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+
+	var task focus.Task
+	var rest []focus.Task
+	found := false
+	for _, t := range tasks {
+		if t.UID == uid && !found {
+			task, found = t, true
+		} else {
+			rest = append(rest, t)
+		}
+	}
+	if !found {
+		writeJSON(w, http.StatusNotFound, api.ErrorResponse{Error: "no open task with this uid"})
+		return
+	}
+	if task.Recurring {
+		writeJSON(w, http.StatusConflict, api.ErrorResponse{Error: caldav.ErrRecurring.Error()})
+		return
+	}
+
+	changed := api.ErrorResponse{
+		Error:   "the task was changed elsewhere, so it was left alone",
+		Current: api.TaskPtr(task, true),
+	}
+	if want := unquoteETag(r.Header.Get("If-Match")); want != "" && want != "*" && want != task.ETag {
+		writeJSON(w, http.StatusConflict, changed)
+		return
+	}
+
+	err = s.tasks.Delete(ctx, task)
+	switch {
+	case errors.Is(err, caldav.ErrConflict):
+		writeJSON(w, http.StatusConflict, changed)
+		return
+	case errors.Is(err, caldav.ErrGone):
+		writeJSON(w, http.StatusNotFound, api.ErrorResponse{Error: "no open task with this uid"})
+		return
+	case err != nil:
+		s.fail(w, caldavError{err})
+		return
+	}
+	s.log.Info("task removed", "uid", task.UID)
+
+	// Forget its focus state; if it was the current task, pick the next.
+	if err := s.store.Unskip(ctx, task.UID); err != nil {
+		s.fail(w, err)
+		return
+	}
+	if cur.UID == task.UID {
+		if err := s.store.ClearCurrent(ctx); err != nil {
+			s.fail(w, err)
+			return
+		}
+		cur = store.Current{}
+	}
+	if _, _, err := s.update(ctx, rest, cur); err != nil {
+		s.fail(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, api.DeleteResponse{Deleted: api.TaskPtr(task, true)})
+}
+
+// unquoteETag turns an If-Match value ("\"abc\"") into a bare ETag (abc).
+func unquoteETag(value string) string {
+	value = strings.TrimSpace(value)
+	if len(value) >= 2 && strings.HasPrefix(value, `"`) && strings.HasSuffix(value, `"`) {
+		return value[1 : len(value)-1]
+	}
+	return value
 }
 
 func (s *Server) done(w http.ResponseWriter, r *http.Request) {

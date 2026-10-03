@@ -157,6 +157,7 @@ func TestAuth(t *testing.T) {
 		{"POST", "/tasks", `{"summary":"x"}`},
 		{"POST", "/current/done", ""},
 		{"POST", "/current/skip", ""},
+		{"DELETE", "/tasks/milk", ""},
 		{"GET", "/unknown", ""},
 	}
 	for _, a := range auths {
@@ -431,6 +432,88 @@ func TestAddTaskWithUID(t *testing.T) {
 	}
 	if n := len(e.caldav.Objects[caldavtest.TodoPath]); n != 3 {
 		t.Errorf("Todo has %d objects, want 3", n)
+	}
+}
+
+func TestDeleteTask(t *testing.T) {
+	e := newEnv(t)
+	if got := e.current(); got != "milk" {
+		t.Fatalf("current = %q, want milk", got)
+	}
+
+	// Add a task and remove it again with the ETag it was created with,
+	// as t undo does.
+	var added api.AddResponse
+	e.do("POST", "/tasks", `{"uid":"oops","summary":"lsit"}`, &added)
+	if added.ETag == "" {
+		t.Fatal("POST /tasks returned no etag")
+	}
+	req := func(etag string) (int, api.DeleteResponse, api.ErrorResponse) {
+		t.Helper()
+		r, _ := http.NewRequest("DELETE", e.url+"/tasks/oops", nil)
+		r.Header.Set("Authorization", "Bearer "+testToken)
+		if etag != "" {
+			r.Header.Set("If-Match", `"`+etag+`"`)
+		}
+		resp, err := http.DefaultClient.Do(r)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		data, _ := io.ReadAll(resp.Body)
+		var ok api.DeleteResponse
+		var bad api.ErrorResponse
+		json.Unmarshal(data, &ok)
+		json.Unmarshal(data, &bad)
+		return resp.StatusCode, ok, bad
+	}
+
+	// A stale ETag is refused and the task stays.
+	e.caldav.Edit(t, caldavtest.TodoPath+"oops.ics", "lsit (edited on the phone)")
+	if status, _, bad := req(added.ETag); status != http.StatusConflict || bad.Current == nil {
+		t.Errorf("stale If-Match: status %d, body %+v; want 409 with the task", status, bad)
+	}
+	if _, ok := e.caldav.Find(caldavtest.TodoPath + "oops.ics"); !ok {
+		t.Fatal("a task changed elsewhere was deleted")
+	}
+
+	// Without If-Match, the current version is removed.
+	status, ok, _ := req("")
+	if status != http.StatusOK || uidOf(ok.Deleted) != "oops" {
+		t.Errorf("delete: status %d, deleted %v; want 200, oops", status, ok.Deleted)
+	}
+	if _, found := e.caldav.Find(caldavtest.TodoPath + "oops.ics"); found {
+		t.Error("the task is still in CalDAV")
+	}
+	if status, _, _ := req(""); status != http.StatusNotFound {
+		t.Errorf("delete again: status %d, want 404", status)
+	}
+	if got := e.current(); got != "milk" {
+		t.Errorf("current = %q; removing another task must not change it", got)
+	}
+}
+
+func TestDeleteCurrentTaskPicksNext(t *testing.T) {
+	e := newEnv(t)
+	e.current() // milk
+	if got := e.do("DELETE", "/tasks/milk", "", nil); got != http.StatusOK {
+		t.Fatalf("status %d, want 200", got)
+	}
+	if got := e.current(); got != "open" {
+		t.Errorf("current = %q, want open", got)
+	}
+}
+
+func TestDeleteRefusesRecurring(t *testing.T) {
+	e := newEnv(t)
+	e.caldav.Add(t, caldavtest.TodoPath+"weekly.ics",
+		"BEGIN:VTODO", "UID:weekly", "DTSTAMP:20261001T100000Z", "SUMMARY:Water plants",
+		"RRULE:FREQ=WEEKLY", "END:VTODO")
+	if got := e.do("DELETE", "/tasks/weekly", "", nil); got != http.StatusConflict {
+		t.Errorf("status %d, want 409", got)
+	}
+	if _, ok := e.caldav.Find(caldavtest.TodoPath + "weekly.ics"); !ok {
+		t.Error("a recurring task was deleted")
 	}
 }
 

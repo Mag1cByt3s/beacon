@@ -62,12 +62,12 @@ func TestClient(t *testing.T) {
 	}
 
 	uid := caldav.NewUID()
-	list, err := c.Add(ctx, uid, "buy coffee")
+	list, _, err := c.Add(ctx, uid, "buy coffee")
 	if err != nil || list != "Todo" {
 		t.Errorf("Add = %q, %v; want Todo", list, err)
 	}
 	// Retrying the same capture never creates a duplicate.
-	if _, err := c.Add(ctx, uid, "buy coffee"); !errors.Is(err, api.ErrExists) {
+	if _, _, err := c.Add(ctx, uid, "buy coffee"); !errors.Is(err, api.ErrExists) {
 		t.Errorf("retry: err = %v, want ErrExists", err)
 	}
 
@@ -90,6 +90,39 @@ func TestClient(t *testing.T) {
 	}
 	if s, _ := backend.Todo(coffeePath).Props.Text("STATUS"); s != "COMPLETED" {
 		t.Errorf("buy coffee STATUS = %q, want COMPLETED", s)
+	}
+}
+
+func TestClientRemove(t *testing.T) {
+	srv, backend := newServer(t)
+	c := newClient(t, srv.URL, testToken)
+	ctx := context.Background()
+
+	uid := caldav.NewUID()
+	_, etag, err := c.Add(ctx, uid, "lsit")
+	if err != nil || etag == "" {
+		t.Fatalf("Add = %q, %v; want an etag", etag, err)
+	}
+	path := caldavtest.TodoPath + uid + ".ics"
+
+	// Changed elsewhere since it was added: refused, with the task as it is now.
+	backend.Edit(t, path, "lsit, edited")
+	_, err = c.Remove(ctx, uid, etag)
+	var conflict *api.ConflictError
+	if !errors.As(err, &conflict) || conflict.Current == nil || conflict.Current.Summary != "lsit, edited" {
+		t.Fatalf("err = %v, want a *ConflictError with the edited task", err)
+	}
+
+	// With the current version it is removed.
+	removed, err := c.Remove(ctx, uid, "")
+	if err != nil || removed.Summary != "lsit, edited" {
+		t.Fatalf("Remove = %+v, %v", removed, err)
+	}
+	if _, ok := backend.Find(path); ok {
+		t.Error("the task is still in CalDAV")
+	}
+	if _, err := c.Remove(ctx, uid, ""); !errors.Is(err, api.ErrNotFound) {
+		t.Errorf("Remove again: err = %v, want ErrNotFound", err)
 	}
 }
 
@@ -143,7 +176,7 @@ func TestClientCalDAVUnreachable(t *testing.T) {
 	defer srv.Close()
 
 	c := newClient(t, srv.URL, testToken)
-	_, err := c.Add(context.Background(), caldav.NewUID(), "x")
+	_, _, err := c.Add(context.Background(), caldav.NewUID(), "x")
 	if !errors.Is(err, api.ErrUnreachable) || err.Error() != "beacon server: cannot reach CalDAV server" {
 		t.Errorf("err = %v, want ErrUnreachable with the server's message", err)
 	}

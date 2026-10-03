@@ -115,12 +115,12 @@ func (f *fakeBackend) Current(ctx context.Context) (focus.Task, bool, error) {
 	return f.tasks[0], true, f.err
 }
 
-func (f *fakeBackend) Add(ctx context.Context, uid, summary string) (string, error) {
+func (f *fakeBackend) Add(ctx context.Context, uid, summary string) (string, string, error) {
 	f.added = append(f.added, uid)
 	if f.addErr != nil {
-		return "", f.addErr
+		return "", "", f.addErr
 	}
-	return "Todo", f.err
+	return "Todo", "etag-" + uid, f.err
 }
 
 func (f *fakeBackend) Done(ctx context.Context) (focus.Task, bool, error) {

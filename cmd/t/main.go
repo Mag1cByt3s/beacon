@@ -7,6 +7,8 @@
 //	t done            complete the current task and show the next one
 //	t skip            skip the current task for now (server only)
 //	t add <words>     add a task that starts with a command word
+//	t prompt          the current task or nothing, fast (for the shell hook)
+//	t hook zsh|bash   print the shell hook
 //
 // With BEACON_SERVER_URL set, t talks to the beacon server; otherwise it
 // talks to the CalDAV server directly.
@@ -20,6 +22,7 @@ import (
 	"os"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/Mag1cByt3s/beacon/internal/api"
 	"github.com/Mag1cByt3s/beacon/internal/config"
@@ -35,6 +38,8 @@ const usage = `usage:
   t done            complete the current task
   t skip            skip the current task for now
   t add <words...>  add a task that starts with a command word
+  t prompt          show the current task quickly, or nothing
+  t hook zsh|bash   print a snippet for your shell rc file
 `
 
 // Time limits, so t never hangs the terminal.
@@ -46,8 +51,9 @@ const (
 
 // command is what the user asked for, decided from the arguments alone.
 type command struct {
-	name    string // "list", "focus", "done", "skip", "add" or "help"
+	name    string // "list", "focus", "done", "skip", "add", "prompt", "hook" or "help"
 	summary string // title of the new task, only for "add"
+	shell   string // "zsh" or "bash", only for "hook"
 }
 
 func main() {
@@ -62,9 +68,16 @@ func run(args []string, out io.Writer) error {
 	if err != nil {
 		return err
 	}
-	if cmd.name == "help" {
+	switch cmd.name {
+	case "help":
 		fmt.Fprint(out, usage)
 		return nil
+	case "hook":
+		fmt.Fprint(out, hooks[cmd.shell])
+		return nil
+	case "prompt":
+		runPrompt(out, config.Load())
+		return nil // always exit code 0
 	}
 
 	cfg := config.Load()
@@ -102,7 +115,7 @@ func parseArgs(args []string) (command, error) {
 
 	first := args[0]
 	switch first {
-	case "list", "focus", "done", "skip", "help":
+	case "list", "focus", "done", "skip", "prompt", "help":
 		if len(args) > 1 {
 			return command{}, fmt.Errorf("%q takes no extra words; to add this as a task, use: t add %s",
 				first, strings.Join(args, " "))
@@ -110,6 +123,11 @@ func parseArgs(args []string) (command, error) {
 		return command{name: first}, nil
 	case "-h", "--help":
 		return command{name: "help"}, nil
+	case "hook":
+		if len(args) != 2 || hooks[args[1]] == "" {
+			return command{}, errors.New("usage: t hook zsh|bash")
+		}
+		return command{name: "hook", shell: args[1]}, nil
 	case "add":
 		args = args[1:]
 	default:
@@ -190,14 +208,27 @@ func (a *app) execute(ctx context.Context, cmd command) error {
 // formatTask renders a task as one calm line, for example
 // "Pay rent (due tomorrow)" or "Milk [Groceries]".
 func formatTask(task focus.Task, now time.Time, defaultList string) string {
-	line := task.Summary
+	line := oneLine(task.Summary)
 	if due := describeDue(task, now); due != "" {
 		line += " (" + due + ")"
 	}
 	if task.List != "" && !strings.EqualFold(task.List, defaultList) {
-		line += " [" + task.List + "]"
+		line += " [" + oneLine(task.List) + "]"
 	}
 	return line
+}
+
+// oneLine makes text safe to print as one line in a terminal. Titles come
+// from other devices and may contain line breaks or control characters
+// (which could even change the terminal's state); those become spaces.
+func oneLine(text string) string {
+	clean := strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) {
+			return ' '
+		}
+		return r
+	}, text)
+	return strings.Join(strings.Fields(clean), " ")
 }
 
 // describeDue says when a task is due in words: "overdue", "due today",

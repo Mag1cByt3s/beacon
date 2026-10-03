@@ -28,6 +28,8 @@ func TestFormatTask(t *testing.T) {
 		{"due next year", focus.Task{Summary: "Tax", Due: time.Date(2027, 1, 4, 0, 0, 0, 0, time.UTC), DueAllDay: true}, "Tax (due Mon 4 Jan 2027)"},
 		{"default list is not shown", focus.Task{Summary: "Read", List: "todo"}, "Read"},
 		{"other list is shown", focus.Task{Summary: "Milk", List: "Groceries"}, "Milk [Groceries]"},
+		{"line breaks become spaces", focus.Task{Summary: "Call\nthe  bank\r\n"}, "Call the bank"},
+		{"terminal escapes are removed", focus.Task{Summary: "Pay\x1b[2Jrent\x07"}, "Pay [2Jrent"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -52,6 +54,12 @@ func TestParseArgs(t *testing.T) {
 		{name: "done", args: []string{"done"}, wantName: "done"},
 		{name: "skip", args: []string{"skip"}, wantName: "skip"},
 		{name: "skip with extra words", args: []string{"skip", "lunch"}, wantErr: true},
+		{name: "prompt", args: []string{"prompt"}, wantName: "prompt"},
+		{name: "prompt with extra words", args: []string{"prompt", "x"}, wantErr: true},
+		{name: "hook zsh", args: []string{"hook", "zsh"}, wantName: "hook"},
+		{name: "hook bash", args: []string{"hook", "bash"}, wantName: "hook"},
+		{name: "hook without shell", args: []string{"hook"}, wantErr: true},
+		{name: "hook unknown shell", args: []string{"hook", "fish"}, wantErr: true},
 		{name: "help", args: []string{"help"}, wantName: "help"},
 		{name: "--help", args: []string{"--help"}, wantName: "help"},
 		{name: "-h", args: []string{"-h"}, wantName: "help"},

@@ -1,0 +1,165 @@
+package api
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net/http"
+	"net/url"
+	"strings"
+
+	"github.com/Mag1cByt3s/beacon/internal/focus"
+)
+
+// ErrUnauthorized means the server did not accept the token.
+var ErrUnauthorized = errors.New("the beacon server rejected the token; check BEACON_TOKEN")
+
+// ConflictError means the server refused to complete the current task
+// because it changed elsewhere since it became current. Current is the task
+// as it is now, if the server sent it.
+type ConflictError struct {
+	Message string
+	Current *focus.Task
+}
+
+func (e *ConflictError) Error() string {
+	return e.Message
+}
+
+// Client talks to a beacon server.
+type Client struct {
+	base  *url.URL
+	token string
+	http  *http.Client
+}
+
+// NewClient creates a client for the server at baseURL.
+func NewClient(baseURL, token string) (*Client, error) {
+	base, err := url.Parse(baseURL)
+	if err != nil || base.Scheme == "" || base.Host == "" {
+		return nil, errors.New("BEACON_SERVER_URL is not a valid URL (example: https://beacon.example.org)")
+	}
+	// Requests are bounded by the caller's context, so no client timeout.
+	return &Client{base: base, token: token, http: &http.Client{}}, nil
+}
+
+// Tasks returns the open tasks in focus order, current task first.
+func (c *Client) Tasks(ctx context.Context) ([]focus.Task, error) {
+	var resp TasksResponse
+	if err := c.do(ctx, http.MethodGet, "tasks", nil, &resp); err != nil {
+		return nil, err
+	}
+	tasks := make([]focus.Task, len(resp.Tasks))
+	for i, t := range resp.Tasks {
+		tasks[i] = t.Focus()
+	}
+	return tasks, nil
+}
+
+// Current returns the current task. ok is false when nothing is open.
+func (c *Client) Current(ctx context.Context) (task focus.Task, ok bool, err error) {
+	var resp CurrentResponse
+	if err := c.do(ctx, http.MethodGet, "current", nil, &resp); err != nil {
+		return focus.Task{}, false, err
+	}
+	return optional(resp.Task)
+}
+
+// Add creates a task and returns the name of the list it went to.
+func (c *Client) Add(ctx context.Context, summary string) (string, error) {
+	var resp AddResponse
+	if err := c.do(ctx, http.MethodPost, "tasks", AddRequest{Summary: summary}, &resp); err != nil {
+		return "", err
+	}
+	return resp.List, nil
+}
+
+// Done completes the current task and returns the next one.
+// It returns a *ConflictError if the task changed since it became current.
+func (c *Client) Done(ctx context.Context) (next focus.Task, ok bool, err error) {
+	var resp DoneResponse
+	if err := c.do(ctx, http.MethodPost, "current/done", nil, &resp); err != nil {
+		return focus.Task{}, false, err
+	}
+	return optional(resp.Current)
+}
+
+// Skip moves the current task to the end of the skip order and returns
+// the next one.
+func (c *Client) Skip(ctx context.Context) (next focus.Task, ok bool, err error) {
+	var resp SkipResponse
+	if err := c.do(ctx, http.MethodPost, "current/skip", nil, &resp); err != nil {
+		return focus.Task{}, false, err
+	}
+	return optional(resp.Current)
+}
+
+func optional(t *Task) (focus.Task, bool, error) {
+	if t == nil {
+		return focus.Task{}, false, nil
+	}
+	return t.Focus(), true, nil
+}
+
+// do sends one request. in, if not nil, is sent as JSON; the answer is
+// decoded into out. Errors are turned into short messages for people.
+func (c *Client) do(ctx context.Context, method, path string, in, out any) error {
+	var body io.Reader
+	if in != nil {
+		data, err := json.Marshal(in)
+		if err != nil {
+			return err
+		}
+		body = bytes.NewReader(data)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, method, c.base.JoinPath(path).String(), body)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+c.token)
+	if in != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+
+	resp, err := c.http.Do(req)
+	if err != nil {
+		if errors.Is(err, context.DeadlineExceeded) {
+			return fmt.Errorf("the beacon server at %s did not answer in time", c.base.Host)
+		}
+		return fmt.Errorf("cannot reach the beacon server at %s; is it running? (check BEACON_SERVER_URL)", c.base.Host)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode/100 == 2 {
+		if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
+			return fmt.Errorf("the beacon server sent an unexpected answer: %w", err)
+		}
+		return nil
+	}
+
+	// Errors carry an ErrorResponse; fall back to the status if they don't.
+	var errResp ErrorResponse
+	json.NewDecoder(io.LimitReader(resp.Body, 64<<10)).Decode(&errResp)
+	msg := strings.TrimSpace(errResp.Error)
+	if msg == "" {
+		msg = resp.Status
+	}
+
+	switch resp.StatusCode {
+	case http.StatusUnauthorized:
+		return ErrUnauthorized
+	case http.StatusConflict:
+		conflict := &ConflictError{Message: msg}
+		if errResp.Current != nil {
+			current := errResp.Current.Focus()
+			conflict.Current = &current
+		}
+		return conflict
+	default:
+		return fmt.Errorf("beacon server: %s", msg)
+	}
+}

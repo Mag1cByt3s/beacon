@@ -44,6 +44,7 @@ t focus                   # only the current task
 t done                    # complete the current task, then show the next one
 t skip                    # skip the current task for now (server only)
 t add list the receipts   # add a task that starts with a command word
+t prompt                  # the current task or nothing, within 300 ms
 ```
 
 Order: overdue first, then by due date, then priority, then oldest first.
@@ -56,16 +57,40 @@ on the phone.
 the phone). With the server it tells you what the task looks like now; run
 `t done` again to complete it as it is.
 
+### Offline captures
+
+If the server or Radicale cannot be reached, `t buy coffee` saves the task in
+`$XDG_STATE_HOME/beacon/queue.jsonl` (default `~/.local/state/beacon/`) and
+prints `Saved offline, will sync later.` Every later `t` command first sends
+saved tasks, quietly and for at most 2 seconds. Each saved task keeps the UID
+it was given when first captured, so sending it twice never creates a
+duplicate. Only captures are saved; `done` and `skip` never are.
+
+### Shell hook
+
+Show the current task whenever a new terminal opens (once per shell, not on
+every prompt). Add one line to your shell's rc file:
+
+```sh
+eval "$(t hook zsh)"     # ~/.zshrc
+eval "$(t hook bash)"    # ~/.bashrc
+```
+
+The hook runs `t prompt`, which gives up silently after 300 ms. With
+`BEACON_SERVER_URL` set it only asks the server; without, it has to run the
+password command and talk to Radicale, which is often too slow for 300 ms.
+
 ## API
 
 Every endpoint except `/healthz` needs `Authorization: Bearer <BEACON_TOKEN>`.
+`503` means Radicale could not be reached; trying again later may work.
 
 | Endpoint | Does |
 |---|---|
 | `GET /healthz` | `ok`, no token needed |
 | `GET /current` | the current task, or `null` |
 | `GET /tasks` | open tasks in focus order |
-| `POST /tasks` | add `{"summary": "buy coffee"}` to the default list |
+| `POST /tasks` | add `{"summary": "buy coffee"}` to the default list; an optional `"uid"` makes retries safe (`409` if it exists) |
 | `POST /current/done` | complete the current task; `409` if it changed since it became current |
 | `POST /current/skip` | skip the current task and pick the next |
 

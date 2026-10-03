@@ -1,0 +1,2 @@
+# Known false positive: a made-up token in a config test (TestChecks).
+d9160a6bbba34fb93fc3796fd8aeec7e7cfbcb6c:internal/config/config_test.go:generic-api-key:51

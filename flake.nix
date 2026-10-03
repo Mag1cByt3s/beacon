@@ -15,27 +15,47 @@
       forAllSystems = f: nixpkgs.lib.genAttrs systems (system: f nixpkgs.legacyPackages.${system});
     in
     {
-      packages = forAllSystems (pkgs: {
-        t = pkgs.buildGoModule {
-          pname = "t";
-          version = "0.1.0";
-          src = ./.;
-          # Update this hash whenever go.mod or go.sum change:
-          # set it to pkgs.lib.fakeHash, run `nix build`, copy the hash it prints.
-          vendorHash = "sha256-rLbu1aA2+JcgRlqTeiLacCzSlEVzqZLH4fPBkqPNQMM=";
-          subPackages = [ "cmd/t" ];
-          env.CGO_ENABLED = 0;
-          ldflags = [
-            "-s"
-            "-w"
-          ];
-          meta = {
-            description = "beacon CLI: shows the next task from CalDAV";
-            mainProgram = "t";
+      packages = forAllSystems (
+        pkgs:
+        let
+          # Both binaries come from the same Go module, so they share the
+          # source and the vendorHash.
+          buildBeacon =
+            {
+              pname,
+              description,
+            }:
+            pkgs.buildGoModule {
+              inherit pname;
+              version = "0.1.0";
+              src = ./.;
+              # Update this hash whenever go.mod or go.sum change:
+              # set it to pkgs.lib.fakeHash, run `nix build`, copy the hash it prints.
+              vendorHash = "sha256-rLbu1aA2+JcgRlqTeiLacCzSlEVzqZLH4fPBkqPNQMM=";
+              subPackages = [ "cmd/${pname}" ];
+              env.CGO_ENABLED = 0;
+              ldflags = [
+                "-s"
+                "-w"
+              ];
+              meta = {
+                inherit description;
+                mainProgram = pname;
+              };
+            };
+        in
+        {
+          t = buildBeacon {
+            pname = "t";
+            description = "beacon CLI: shows the current task";
           };
-        };
-        default = self.packages.${pkgs.stdenv.hostPlatform.system}.t;
-      });
+          beacon = buildBeacon {
+            pname = "beacon";
+            description = "beacon server: HTTP API with focus state on top of CalDAV";
+          };
+          default = self.packages.${pkgs.stdenv.hostPlatform.system}.t;
+        }
+      );
 
       devShells = forAllSystems (pkgs: {
         default = pkgs.mkShell {

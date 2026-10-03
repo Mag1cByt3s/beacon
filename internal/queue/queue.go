@@ -134,38 +134,60 @@ func (q *Queue) Flush(ctx context.Context, send func(context.Context, Entry) err
 	return len(done), firstErr
 }
 
+// Remove takes the entry with this UID out of the queue, so it will never
+// be sent. found is false if it is not queued (any more).
+func (q *Queue) Remove(uid string) (found bool, err error) {
+	err = q.withLock(func() error {
+		n, err := q.removeLocked(map[string]bool{uid: true})
+		found = n > 0
+		return err
+	})
+	return found, err
+}
+
 // remove deletes the entries whose UIDs are in done. It reads the file
 // again first, so entries appended during a flush are kept.
 func (q *Queue) remove(done map[string]bool) error {
 	return q.withLock(func() error {
-		lines, err := q.readLines()
-		if err != nil {
-			return err
-		}
-		var keep bytes.Buffer
-		for _, line := range lines {
-			if e, ok := parse(line); ok && done[e.UID] {
-				continue
-			}
-			keep.WriteString(line)
-			keep.WriteByte('\n')
-		}
-
-		if keep.Len() == 0 {
-			err := os.Remove(q.path)
-			if errors.Is(err, fs.ErrNotExist) {
-				return nil
-			}
-			return err
-		}
-		// Write a new file and rename it over the old one. A rename is
-		// atomic, so the queue is never left half written.
-		tmp := q.path + ".tmp"
-		if err := os.WriteFile(tmp, keep.Bytes(), 0o600); err != nil {
-			return err
-		}
-		return os.Rename(tmp, q.path)
+		_, err := q.removeLocked(done)
+		return err
 	})
+}
+
+// removeLocked does the work of remove and returns how many entries it
+// removed. Call it with the lock held.
+func (q *Queue) removeLocked(done map[string]bool) (removed int, err error) {
+	lines, err := q.readLines()
+	if err != nil {
+		return 0, err
+	}
+	var keep bytes.Buffer
+	for _, line := range lines {
+		if e, ok := parse(line); ok && done[e.UID] {
+			removed++
+			continue
+		}
+		keep.WriteString(line)
+		keep.WriteByte('\n')
+	}
+	if removed == 0 {
+		return 0, nil // nothing to change
+	}
+
+	if keep.Len() == 0 {
+		err := os.Remove(q.path)
+		if errors.Is(err, fs.ErrNotExist) {
+			return removed, nil
+		}
+		return removed, err
+	}
+	// Write a new file and rename it over the old one. A rename is
+	// atomic, so the queue is never left half written.
+	tmp := q.path + ".tmp"
+	if err := os.WriteFile(tmp, keep.Bytes(), 0o600); err != nil {
+		return removed, err
+	}
+	return removed, os.Rename(tmp, q.path)
 }
 
 // readLines returns the file's non-empty lines. A missing file is an empty

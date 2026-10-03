@@ -206,3 +206,27 @@ func TestRetryNeverDuplicates(t *testing.T) {
 		t.Errorf("stored = %v, want each task exactly once", stored)
 	}
 }
+
+func TestRemove(t *testing.T) {
+	q := newQueue(t)
+	appendAll(t, q, "a", "b", "c")
+
+	if found, err := q.Remove("b"); err != nil || !found {
+		t.Fatalf("Remove(b) = %v, %v; want true", found, err)
+	}
+	if got := queuedUIDs(t, q); !slices.Equal(got, []string{"a", "c"}) {
+		t.Errorf("left in queue: %q, want [a c]", got)
+	}
+	if found, err := q.Remove("b"); err != nil || found {
+		t.Errorf("Remove(b) again = %v, %v; want false", found, err)
+	}
+	q.Remove("a")
+	q.Remove("c")
+	if _, err := os.Stat(q.Path()); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("empty queue file still exists (err %v)", err)
+	}
+	// An empty queue is fine too.
+	if found, err := newQueue(t).Remove("x"); err != nil || found {
+		t.Errorf("Remove on a new queue = %v, %v", found, err)
+	}
+}

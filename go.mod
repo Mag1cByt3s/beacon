@@ -5,6 +5,7 @@ go 1.26.7
 require (
 	github.com/emersion/go-ical v0.0.0-20250609112844-439c63cef608
 	github.com/emersion/go-webdav v0.7.0
+	golang.org/x/term v0.46.0
 	modernc.org/sqlite v1.60.1
 )
 

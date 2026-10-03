@@ -33,7 +33,7 @@
               src = ./.;
               # Update this hash whenever go.mod or go.sum change:
               # set it to pkgs.lib.fakeHash, run `nix build`, copy the hash it prints.
-              vendorHash = "sha256-rLbu1aA2+JcgRlqTeiLacCzSlEVzqZLH4fPBkqPNQMM=";
+              vendorHash = "sha256-0OX0iW+0ocVBN2gKLAPe5L+N37v+WDapz9J+eat4wi0=";
               subPackages = [ "cmd/${cmd}" ];
               # CGO_ENABLED=0 gives a static binary with no C dependencies.
               env.CGO_ENABLED = 0;

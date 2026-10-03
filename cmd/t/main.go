@@ -91,6 +91,11 @@ func run(args []string, out io.Writer) error {
 		return err
 	}
 	a := &app{b: b, out: out, defaultList: cfg.DefaultList, queue: openQueue(), lastPath: lastCapturePath()}
+	// out.(*os.File) asks whether out is a real file such as os.Stdout;
+	// only then can it be a terminal.
+	if f, ok := out.(*os.File); ok {
+		a.tty = detectTerminal(f)
+	}
 
 	// First send captures saved while offline. This never stops the
 	// command itself. Not for undo: a capture still waiting in the queue
@@ -112,6 +117,7 @@ type app struct {
 	queue       *queue.Queue // captures saved while offline; nil if there is none
 	offline     bool         // the last flush could not reach the server
 	lastPath    string       // file remembering the last capture for t undo; "" for none
+	tty         terminal     // the terminal t prints to; zero value for pipes and files
 }
 
 // parseArgs decides what to do. A first word that is a command runs that
@@ -184,11 +190,16 @@ func (a *app) execute(ctx context.Context, cmd command) error {
 		if err != nil {
 			return err
 		}
-		if len(tasks) == 0 {
+		switch {
+		case len(tasks) == 0:
 			show(focus.Task{}, false)
-		}
-		for _, task := range tasks {
-			show(task, true)
+		case a.tty.width > 0:
+			// A terminal gets a checklist; pipes and scripts get plain lines.
+			fmt.Fprint(out, renderList(tasks, now, a.defaultList, a.tty))
+		default:
+			for _, task := range tasks {
+				show(task, true)
+			}
 		}
 
 	case "focus":

@@ -34,3 +34,52 @@ func TestFormatTask(t *testing.T) {
 		})
 	}
 }
+
+func TestParseArgs(t *testing.T) {
+	tests := []struct {
+		name        string
+		args        []string
+		wantName    string
+		wantSummary string
+		wantErr     bool
+	}{
+		{name: "no args shows focus", args: nil, wantName: "focus"},
+		{name: "list", args: []string{"list"}, wantName: "list"},
+		{name: "focus", args: []string{"focus"}, wantName: "focus"},
+		{name: "done", args: []string{"done"}, wantName: "done"},
+		{name: "help", args: []string{"help"}, wantName: "help"},
+		{name: "--help", args: []string{"--help"}, wantName: "help"},
+		{name: "-h", args: []string{"-h"}, wantName: "help"},
+		{name: "words become a task", args: []string{"buy", "coffee"}, wantName: "add", wantSummary: "buy coffee"},
+		{name: "one quoted argument", args: []string{"buy coffee"}, wantName: "add", wantSummary: "buy coffee"},
+		{name: "extra spaces collapse", args: []string{"  buy ", "  coffee  "}, wantName: "add", wantSummary: "buy coffee"},
+		{name: "single word", args: []string{"laundry"}, wantName: "add", wantSummary: "laundry"},
+		{name: "command word later is fine", args: []string{"make", "a", "list"}, wantName: "add", wantSummary: "make a list"},
+		{name: "capitalised command word is a task", args: []string{"Done"}, wantName: "add", wantSummary: "Done"},
+		{name: "add with command word", args: []string{"add", "list", "groceries"}, wantName: "add", wantSummary: "list groceries"},
+		{name: "add a task called add", args: []string{"add", "add"}, wantName: "add", wantSummary: "add"},
+		{name: "add without words", args: []string{"add"}, wantErr: true},
+		{name: "add with only spaces", args: []string{"add", "  "}, wantErr: true},
+		{name: "empty argument", args: []string{""}, wantErr: true},
+		{name: "done with extra words", args: []string{"done", "with", "dishes"}, wantErr: true},
+		{name: "list with extra words", args: []string{"list", "all"}, wantErr: true},
+		{name: "unknown option", args: []string{"--version"}, wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := parseArgs(tt.args)
+			if tt.wantErr {
+				if err == nil {
+					t.Errorf("parseArgs(%q) = %+v, want an error", tt.args, got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("parseArgs(%q): %v", tt.args, err)
+			}
+			if got.name != tt.wantName || got.summary != tt.wantSummary {
+				t.Errorf("parseArgs(%q) = %+v, want name %q summary %q", tt.args, got, tt.wantName, tt.wantSummary)
+			}
+		})
+	}
+}

@@ -187,11 +187,12 @@ func printNext(out io.Writer, tasks []focus.Task, showList bool) {
 
 // connect reads the configuration and creates a CalDAV client.
 func connect() (config.Config, *caldav.Client, error) {
-	cfg, err := config.Load()
-	if err != nil {
+	cfg := config.Load()
+	if err := cfg.CheckCalDAV(); err != nil {
 		return config.Config{}, nil, err
 	}
 
+	var err error
 	password := ""
 	if cfg.User != "" {
 		password, err = cfg.Password()

@@ -17,16 +17,21 @@ export BEACON_DEFAULT_LIST=Todo                     # where new tasks go, defaul
 The server additionally uses:
 
 ```sh
-export BEACON_TOKEN=$(openssl rand -hex 32)   # required, at least 16 characters
-export BEACON_LISTEN=127.0.0.1:8080           # default
-export BEACON_DB=/var/db/beacon/beacon.db     # focus state, default ./beacon.db
+export BEACON_TOKEN_FILE=/usr/local/etc/beacon/token   # required (or BEACON_TOKEN)
+export BEACON_LISTEN=127.0.0.1:8080                    # default
+export BEACON_DB=/var/db/beacon/beacon.db              # focus state, default ./beacon.db
 ```
+
+The token is at least 16 characters, for example from `openssl rand -hex 32`.
+`BEACON_TOKEN_FILE` names a file holding it and takes precedence over
+`BEACON_TOKEN`. The server refuses to start if other users can read the file
+(use `chmod 600`).
 
 `t` talks to the server when these are set, and to Radicale directly otherwise:
 
 ```sh
 export BEACON_SERVER_URL=https://beacon.example.org
-export BEACON_TOKEN=...                       # the same token as the server
+export BEACON_TOKEN_FILE=~/.config/beacon/token        # the same token as the server
 ```
 
 ## Run
@@ -35,6 +40,9 @@ export BEACON_TOKEN=...                       # the same token as the server
 nix build .#t .#beacon    # or: go build ./cmd/t ./cmd/beacon
 beacon                    # start the server
 ```
+
+To run the server in a FreeBSD jail, see [docs/deploy.md](docs/deploy.md).
+`nix build .#beacon-freebsd-amd64` builds a static FreeBSD binary.
 
 ```sh
 t                         # show the current task

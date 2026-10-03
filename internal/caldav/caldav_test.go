@@ -3,6 +3,7 @@ package caldav
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -10,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/emersion/go-ical"
+	"github.com/emersion/go-webdav"
 	"github.com/emersion/go-webdav/caldav"
 )
 
@@ -19,9 +21,17 @@ import (
 //
 // Paths follow go-webdav's layout:
 // /alice/ (principal), /alice/calendars/ (home set), /alice/calendars/<name>/.
+//
+// Like a real server, it gives every stored version a new ETag and honours
+// If-Match and If-None-Match on PUT.
 type fakeBackend struct {
 	calendars []caldav.Calendar
 	objects   map[string][]caldav.CalendarObject // keyed by calendar path
+	version   int                                // source of new ETags
+
+	// afterGet, if set, runs after an object has been served by GET.
+	// Tests use it to simulate an edit on the phone at the worst moment.
+	afterGet func(path string)
 }
 
 func (b *fakeBackend) CurrentUserPrincipal(ctx context.Context) (string, error) {
@@ -54,18 +64,56 @@ func (b *fakeBackend) ListCalendarObjects(ctx context.Context, path string, req 
 	return b.objects[path], nil
 }
 
-// The methods below are not used by the read-only client.
+func (b *fakeBackend) GetCalendarObject(ctx context.Context, path string, req *caldav.CalendarCompRequest) (*caldav.CalendarObject, error) {
+	obj, _, ok := b.find(path)
+	if !ok {
+		return nil, webdav.NewHTTPError(http.StatusNotFound, errors.New("no such object"))
+	}
+	if b.afterGet != nil {
+		// obj is already a copy, so the client still gets the old version.
+		b.afterGet(path)
+	}
+	return &obj, nil
+}
+
+func (b *fakeBackend) PutCalendarObject(ctx context.Context, path string, cal *ical.Calendar, opts *caldav.PutCalendarObjectOptions) (*caldav.CalendarObject, error) {
+	old, i, exists := b.find(path)
+	if opts.IfNoneMatch.IsWildcard() && exists {
+		return nil, webdav.NewHTTPError(http.StatusPreconditionFailed, errors.New("already exists"))
+	}
+	if opts.IfMatch.IsSet() {
+		ok, err := opts.IfMatch.MatchETag(old.ETag)
+		if err != nil || !ok {
+			return nil, webdav.NewHTTPError(http.StatusPreconditionFailed, errors.New("etag mismatch"))
+		}
+	}
+
+	b.version++
+	obj := caldav.CalendarObject{Path: path, ETag: fmt.Sprintf("v%d", b.version), Data: cal}
+	calPath := path[:strings.LastIndex(path, "/")+1]
+	if exists {
+		b.objects[calPath][i] = obj
+	} else {
+		b.objects[calPath] = append(b.objects[calPath], obj)
+	}
+	return &obj, nil
+}
+
+// find returns the object stored at path and its index in its calendar.
+func (b *fakeBackend) find(path string) (obj caldav.CalendarObject, index int, ok bool) {
+	calPath := path[:strings.LastIndex(path, "/")+1]
+	for i, o := range b.objects[calPath] {
+		if o.Path == path {
+			return o, i, true
+		}
+	}
+	return caldav.CalendarObject{}, 0, false
+}
+
+// The methods below are not used by beacon.
 
 func (b *fakeBackend) CreateCalendar(ctx context.Context, calendar *caldav.Calendar) error {
 	return errors.New("not implemented")
-}
-
-func (b *fakeBackend) GetCalendarObject(ctx context.Context, path string, req *caldav.CalendarCompRequest) (*caldav.CalendarObject, error) {
-	return nil, errors.New("not implemented")
-}
-
-func (b *fakeBackend) PutCalendarObject(ctx context.Context, path string, calendar *ical.Calendar, opts *caldav.PutCalendarObjectOptions) (*caldav.CalendarObject, error) {
-	return nil, errors.New("not implemented")
 }
 
 func (b *fakeBackend) DeleteCalendarObject(ctx context.Context, path string) error {
@@ -77,7 +125,7 @@ func object(t *testing.T, path string, lines ...string) caldav.CalendarObject {
 	return caldav.CalendarObject{Path: path, ETag: "x", Data: parse(t, lines...)}
 }
 
-func newTestServer(t *testing.T) *httptest.Server {
+func newTestServer(t *testing.T) (*httptest.Server, *fakeBackend) {
 	t.Helper()
 	backend := &fakeBackend{
 		calendars: []caldav.Calendar{
@@ -112,7 +160,7 @@ func newTestServer(t *testing.T) *httptest.Server {
 		handler.ServeHTTP(w, r)
 	}))
 	t.Cleanup(srv.Close)
-	return srv
+	return srv, backend
 }
 
 func uids(t *testing.T, c *Client) []string {
@@ -130,7 +178,7 @@ func uids(t *testing.T, c *Client) []string {
 }
 
 func TestOpenTasks(t *testing.T) {
-	srv := newTestServer(t)
+	srv, _ := newTestServer(t)
 	c, err := NewClient(srv.URL+"/", "alice", "test-password", []string{"todo"})
 	if err != nil {
 		t.Fatal(err)
@@ -143,7 +191,7 @@ func TestOpenTasks(t *testing.T) {
 }
 
 func TestOpenTasksSeveralLists(t *testing.T) {
-	srv := newTestServer(t)
+	srv, _ := newTestServer(t)
 	c, err := NewClient(srv.URL+"/", "alice", "test-password", []string{"Todo", "Groceries"})
 	if err != nil {
 		t.Fatal(err)
@@ -156,7 +204,7 @@ func TestOpenTasksSeveralLists(t *testing.T) {
 }
 
 func TestOpenTasksUnknownList(t *testing.T) {
-	srv := newTestServer(t)
+	srv, _ := newTestServer(t)
 	c, _ := NewClient(srv.URL+"/", "alice", "test-password", []string{"Nope"})
 	_, err := c.OpenTasks(context.Background())
 	if err == nil {
@@ -170,7 +218,7 @@ func TestOpenTasksUnknownList(t *testing.T) {
 }
 
 func TestOpenTasksEventCalendarIsNotATaskList(t *testing.T) {
-	srv := newTestServer(t)
+	srv, _ := newTestServer(t)
 	c, _ := NewClient(srv.URL+"/", "alice", "test-password", []string{"Calendar"})
 	if _, err := c.OpenTasks(context.Background()); err == nil {
 		t.Error("OpenTasks accepted a calendar that cannot hold tasks")
@@ -178,7 +226,7 @@ func TestOpenTasksEventCalendarIsNotATaskList(t *testing.T) {
 }
 
 func TestOpenTasksWrongPassword(t *testing.T) {
-	srv := newTestServer(t)
+	srv, _ := newTestServer(t)
 	c, _ := NewClient(srv.URL+"/", "alice", "wrong", []string{"Todo"})
 	_, err := c.OpenTasks(context.Background())
 	if !errors.Is(err, errLogin) {

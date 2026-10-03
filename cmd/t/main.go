@@ -7,6 +7,8 @@
 //	t done            complete the current task and show the next one
 //	t skip            skip the current task for now (server only)
 //	t add <words>     add a task that starts with a command word
+//	t rm <words>      remove the task whose title matches, for good
+//	t undo            remove the task added last, for good
 //	t prompt          the current task or nothing, fast (for the shell hook)
 //	t hook zsh|bash   print the shell hook
 //
@@ -38,6 +40,8 @@ const usage = `usage:
   t done            complete the current task
   t skip            skip the current task for now
   t add <words...>  add a task that starts with a command word
+  t rm <words...>   remove the task whose title matches
+  t undo            remove the task you added last
   t prompt          show the current task quickly, or nothing
   t hook zsh|bash   print a snippet for your shell rc file
 `
@@ -51,8 +55,9 @@ const (
 
 // command is what the user asked for, decided from the arguments alone.
 type command struct {
-	name    string // "list", "focus", "done", "skip", "add", "prompt", "hook" or "help"
+	name    string // "list", "focus", "done", "skip", "add", "rm", "undo", "prompt", "hook" or "help"
 	summary string // title of the new task, only for "add"
+	query   string // words to look for in titles, only for "rm"
 	shell   string // "zsh" or "bash", only for "hook"
 }
 
@@ -85,11 +90,14 @@ func run(args []string, out io.Writer) error {
 	if err != nil {
 		return err
 	}
-	a := &app{b: b, out: out, defaultList: cfg.DefaultList, queue: openQueue()}
+	a := &app{b: b, out: out, defaultList: cfg.DefaultList, queue: openQueue(), lastPath: lastCapturePath()}
 
 	// First send captures saved while offline. This never stops the
-	// command itself.
-	a.flush()
+	// command itself. Not for undo: a capture still waiting in the queue
+	// is simply taken out of it instead of being sent and then deleted.
+	if cmd.name != "undo" {
+		a.flush()
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel() // defer runs when run returns
@@ -103,6 +111,7 @@ type app struct {
 	defaultList string       // tasks from other lists are marked with their list name
 	queue       *queue.Queue // captures saved while offline; nil if there is none
 	offline     bool         // the last flush could not reach the server
+	lastPath    string       // file remembering the last capture for t undo; "" for none
 }
 
 // parseArgs decides what to do. A first word that is a command runs that
@@ -115,7 +124,7 @@ func parseArgs(args []string) (command, error) {
 
 	first := args[0]
 	switch first {
-	case "list", "focus", "done", "skip", "prompt", "help":
+	case "list", "focus", "done", "skip", "undo", "prompt", "help":
 		if len(args) > 1 {
 			return command{}, fmt.Errorf("%q takes no extra words; to add this as a task, use: t add %s",
 				first, strings.Join(args, " "))
@@ -128,11 +137,24 @@ func parseArgs(args []string) (command, error) {
 			return command{}, errors.New("usage: t hook zsh|bash")
 		}
 		return command{name: "hook", shell: args[1]}, nil
+	case "rm":
+		query := strings.Join(strings.Fields(strings.Join(args[1:], " ")), " ")
+		if query == "" {
+			return command{}, errors.New("usage: t rm <words of the title>")
+		}
+		return command{name: "rm", query: query}, nil
 	case "add":
 		args = args[1:]
 	default:
 		if strings.HasPrefix(first, "-") {
 			return command{}, fmt.Errorf("unknown option %q (see t help)", first)
+		}
+		// A single word that is a typo of a command ("t lsit") is not
+		// captured; "t add lsit" still adds it.
+		if len(args) == 1 {
+			if meant, ok := likelyTypo(first); ok {
+				return command{}, fmt.Errorf("did you mean \"t %s\"? To add %q as a task, use: t add %s", meant, first, first)
+			}
 		}
 	}
 
@@ -198,6 +220,12 @@ func (a *app) execute(ctx context.Context, cmd command) error {
 
 	case "add":
 		return a.add(ctx, cmd.summary)
+
+	case "rm":
+		return a.rm(ctx, cmd.query)
+
+	case "undo":
+		return a.undo(ctx)
 
 	default:
 		return fmt.Errorf("unknown command %q", cmd.name)

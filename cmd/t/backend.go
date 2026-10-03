@@ -21,6 +21,9 @@ type backend interface {
 	Add(ctx context.Context, uid, summary string) (list, etag string, err error)
 	Done(ctx context.Context) (next focus.Task, ok bool, err error)
 	Skip(ctx context.Context) (next focus.Task, ok bool, err error)
+	// Remove deletes the open task with this UID for good. With etag set,
+	// only that version is deleted.
+	Remove(ctx context.Context, uid, etag string) (focus.Task, error)
 }
 
 // newBackend picks the server when BEACON_SERVER_URL is set, else CalDAV.
@@ -115,6 +118,23 @@ func (d direct) Done(ctx context.Context) (focus.Task, bool, error) {
 	}
 	next, ok := focus.Next(rest, time.Now())
 	return next, ok, nil
+}
+
+func (d direct) Remove(ctx context.Context, uid, etag string) (focus.Task, error) {
+	tasks, err := d.client.OpenTasks(ctx)
+	if err != nil {
+		return focus.Task{}, err
+	}
+	for _, task := range tasks {
+		if task.UID != uid {
+			continue
+		}
+		if etag != "" && etag != task.ETag {
+			return task, caldav.ErrConflict
+		}
+		return task, d.client.Delete(ctx, task)
+	}
+	return focus.Task{}, caldav.ErrGone
 }
 
 func (d direct) Skip(ctx context.Context) (focus.Task, bool, error) {

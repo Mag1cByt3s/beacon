@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/Mag1cByt3s/beacon/internal/api"
+	"github.com/Mag1cByt3s/beacon/internal/caldav"
 	"github.com/Mag1cByt3s/beacon/internal/focus"
 )
 
@@ -77,6 +78,20 @@ func TestParseArgs(t *testing.T) {
 		{name: "done with extra words", args: []string{"done", "with", "dishes"}, wantErr: true},
 		{name: "list with extra words", args: []string{"list", "all"}, wantErr: true},
 		{name: "unknown option", args: []string{"--version"}, wantErr: true},
+		{name: "undo", args: []string{"undo"}, wantName: "undo"},
+		{name: "undo with extra words", args: []string{"undo", "it"}, wantErr: true},
+		{name: "rm", args: []string{"rm", "buy", "coffee"}, wantName: "rm"},
+		{name: "rm without words", args: []string{"rm"}, wantErr: true},
+		{name: "typo of list", args: []string{"lsit"}, wantErr: true},
+		{name: "typo of focus", args: []string{"fcous"}, wantErr: true},
+		{name: "typo of done", args: []string{"dnoe"}, wantErr: true},
+		{name: "typo of skip", args: []string{"skp"}, wantErr: true},
+		{name: "typo of undo", args: []string{"unod"}, wantErr: true},
+		{name: "typo can still be added", args: []string{"add", "lsit"}, wantName: "add", wantSummary: "lsit"},
+		{name: "capitalised near-command is a task", args: []string{"Lsit"}, wantName: "add", wantSummary: "Lsit"},
+		{name: "near-command with more words is a task", args: []string{"lsit", "groceries"}, wantName: "add", wantSummary: "lsit groceries"},
+		{name: "ordinary word is a task", args: []string{"coffee"}, wantName: "add", wantSummary: "coffee"},
+		{name: "near add is a task", args: []string{"bad"}, wantName: "add", wantSummary: "bad"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -100,10 +115,12 @@ func TestParseArgs(t *testing.T) {
 // fakeBackend returns canned answers, so execute can be tested without
 // any server.
 type fakeBackend struct {
-	tasks  []focus.Task
-	err    error    // returned by every method
-	addErr error    // returned by Add only
-	added  []string // UIDs passed to Add
+	tasks     []focus.Task
+	err       error    // returned by every method
+	addErr    error    // returned by Add only
+	added     []string // UIDs passed to Add
+	removeErr error    // returned by Remove only
+	removed   []string // "uid@etag" passed to Remove
 }
 
 func (f *fakeBackend) Tasks(ctx context.Context) ([]focus.Task, error) { return f.tasks, f.err }
@@ -131,6 +148,19 @@ func (f *fakeBackend) Done(ctx context.Context) (focus.Task, bool, error) {
 }
 
 func (f *fakeBackend) Skip(ctx context.Context) (focus.Task, bool, error) { return f.Done(ctx) }
+
+func (f *fakeBackend) Remove(ctx context.Context, uid, etag string) (focus.Task, error) {
+	f.removed = append(f.removed, uid+"@"+etag)
+	if f.removeErr != nil {
+		return focus.Task{}, f.removeErr
+	}
+	for _, task := range f.tasks {
+		if task.UID == uid {
+			return task, f.err
+		}
+	}
+	return focus.Task{}, caldav.ErrGone
+}
 
 func TestExecute(t *testing.T) {
 	two := []focus.Task{{Summary: "Pay rent", List: "Todo"}, {Summary: "Milk", List: "Groceries"}}

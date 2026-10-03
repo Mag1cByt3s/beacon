@@ -23,8 +23,9 @@ func (a *app) add(ctx context.Context, summary string) error {
 	if !a.offline || a.queue == nil {
 		addCtx, cancel := context.WithTimeout(ctx, addTimeout)
 		defer cancel()
-		list, _, err := a.b.Add(addCtx, uid, summary)
+		list, etag, err := a.b.Add(addCtx, uid, summary)
 		if err == nil {
+			a.saveLast(lastCapture{UID: uid, Summary: summary, ETag: etag})
 			fmt.Fprintf(a.out, "Added to %s.\n", list)
 			return nil
 		}
@@ -37,6 +38,7 @@ func (a *app) add(ctx context.Context, summary string) error {
 	if err != nil {
 		return fmt.Errorf("cannot reach the server, and saving the task offline failed too: %w", err)
 	}
+	a.saveLast(lastCapture{UID: uid, Summary: summary, Queued: true})
 	fmt.Fprintln(a.out, "Saved offline, will sync later.")
 	return nil
 }

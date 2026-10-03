@@ -165,3 +165,43 @@ func TestNext(t *testing.T) {
 		t.Errorf("Next = %q, %v; want soon, true", next.UID, ok)
 	}
 }
+
+func TestOrder(t *testing.T) {
+	// Without focus state these come out as a, b, c, d.
+	tasks := []Task{
+		{UID: "d"},
+		{UID: "c", Due: day(3)},
+		{UID: "b", Due: day(2)},
+		{UID: "a", Due: day(1)},
+		{UID: "weekly", Due: day(-1), Recurring: true},
+	}
+
+	tests := []struct {
+		name       string
+		currentUID string
+		skipped    []string
+		want       []string
+	}{
+		{"no focus state", "", nil, []string{"a", "b", "c", "d"}},
+		{"current stays first even if not best", "c", nil, []string{"c", "a", "b", "d"}},
+		{"current that is gone is ignored", "gone", nil, []string{"a", "b", "c", "d"}},
+		{"recurring current is ignored", "weekly", nil, []string{"a", "b", "c", "d"}},
+		{"skipped go to the end", "", []string{"a"}, []string{"b", "c", "d", "a"}},
+		{"skipped keep their skip order", "", []string{"b", "a"}, []string{"c", "d", "b", "a"}},
+		{"all skipped: longest ago first", "", []string{"c", "a", "d", "b"}, []string{"c", "a", "d", "b"}},
+		{"skipped but current is still first", "a", []string{"a"}, []string{"a", "b", "c", "d"}},
+		{"skips of gone tasks are ignored", "", []string{"gone", "a"}, []string{"b", "c", "d", "a"}},
+		{"duplicate skip entries", "", []string{"a", "a"}, []string{"b", "c", "d", "a"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := []string{}
+			for _, task := range Order(tasks, now, tt.currentUID, tt.skipped) {
+				got = append(got, task.UID)
+			}
+			if !slices.Equal(got, tt.want) {
+				t.Errorf("Order = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}

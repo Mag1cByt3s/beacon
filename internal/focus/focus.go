@@ -78,6 +78,43 @@ func Next(tasks []Task, now time.Time) (next Task, ok bool) {
 	return queue[0], true
 }
 
+// Order returns the tasks in the order focus mode offers them, given the
+// focus state kept by the server:
+//
+//  1. the current task, if it is still open (it stays current until it is
+//     done, skipped, or completed or deleted elsewhere),
+//  2. the queue (see Queue) without skipped tasks,
+//  3. skipped tasks, the one skipped longest ago first.
+//
+// So skipped tasks only come back once nothing else is left. currentUID may
+// be "" and skipped may be nil. Recurring tasks are left out.
+func Order(tasks []Task, now time.Time, currentUID string, skipped []string) []Task {
+	queue := Queue(tasks, now)
+
+	var current, fresh []Task
+	bySkippedUID := map[string]Task{}
+	for _, t := range queue {
+		switch {
+		case currentUID != "" && t.UID == currentUID:
+			current = append(current, t)
+		case slices.Contains(skipped, t.UID):
+			bySkippedUID[t.UID] = t
+		default:
+			fresh = append(fresh, t)
+		}
+	}
+
+	order := append(current, fresh...)
+	for _, uid := range skipped {
+		// The comma-ok form tells a missing key apart from a zero value.
+		if t, ok := bySkippedUID[uid]; ok {
+			order = append(order, t)
+			delete(bySkippedUID, uid) // in case a UID was listed twice
+		}
+	}
+	return order
+}
+
 // compare returns a negative number if a comes before b, a positive number
 // if b comes first, and 0 if they are equal (the convention used by slices
 // and cmp).

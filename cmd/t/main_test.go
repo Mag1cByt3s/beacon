@@ -92,9 +92,10 @@ func TestParseArgs(t *testing.T) {
 // fakeBackend returns canned answers, so execute can be tested without
 // any server.
 type fakeBackend struct {
-	tasks []focus.Task
-	err   error
-	added string
+	tasks  []focus.Task
+	err    error    // returned by every method
+	addErr error    // returned by Add only
+	added  []string // UIDs passed to Add
 }
 
 func (f *fakeBackend) Tasks(ctx context.Context) ([]focus.Task, error) { return f.tasks, f.err }
@@ -107,7 +108,10 @@ func (f *fakeBackend) Current(ctx context.Context) (focus.Task, bool, error) {
 }
 
 func (f *fakeBackend) Add(ctx context.Context, uid, summary string) (string, error) {
-	f.added = summary
+	f.added = append(f.added, uid)
+	if f.addErr != nil {
+		return "", f.addErr
+	}
 	return "Todo", f.err
 }
 
@@ -147,7 +151,8 @@ func TestExecute(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			var out strings.Builder
-			err := execute(context.Background(), tt.backend, tt.cmd, &out, "Todo")
+			a := &app{b: tt.backend, out: &out, defaultList: "Todo"}
+			err := a.execute(context.Background(), tt.cmd)
 			if tt.wantErr == "" && err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}

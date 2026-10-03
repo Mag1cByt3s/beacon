@@ -22,9 +22,9 @@ import (
 	"time"
 
 	"github.com/Mag1cByt3s/beacon/internal/api"
-	"github.com/Mag1cByt3s/beacon/internal/caldav"
 	"github.com/Mag1cByt3s/beacon/internal/config"
 	"github.com/Mag1cByt3s/beacon/internal/focus"
+	"github.com/Mag1cByt3s/beacon/internal/queue"
 )
 
 const usage = `usage:
@@ -37,8 +37,12 @@ const usage = `usage:
   t add <words...>  add a task that starts with a command word
 `
 
-// Each command gets at most this long, so t never hangs the terminal.
-const timeout = 30 * time.Second
+// Time limits, so t never hangs the terminal.
+const (
+	timeout      = 30 * time.Second // one command
+	addTimeout   = 5 * time.Second  // one capture; after that it is saved offline
+	flushTimeout = 2 * time.Second  // sending saved captures before a command
+)
 
 // command is what the user asked for, decided from the arguments alone.
 type command struct {
@@ -68,10 +72,24 @@ func run(args []string, out io.Writer) error {
 	if err != nil {
 		return err
 	}
+	a := &app{b: b, out: out, defaultList: cfg.DefaultList, queue: openQueue()}
+
+	// First send captures saved while offline. This never stops the
+	// command itself.
+	a.flush()
 
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel() // defer runs when run returns
-	return execute(ctx, b, cmd, out, cfg.DefaultList)
+	return a.execute(ctx, cmd)
+}
+
+// app is what a command works with.
+type app struct {
+	b           backend
+	out         io.Writer
+	defaultList string       // tasks from other lists are marked with their list name
+	queue       *queue.Queue // captures saved while offline; nil if there is none
+	offline     bool         // the last flush could not reach the server
 }
 
 // parseArgs decides what to do. A first word that is a command runs that
@@ -108,16 +126,16 @@ func parseArgs(args []string) (command, error) {
 	return command{name: "add", summary: summary}, nil
 }
 
-// execute runs cmd against b and prints the result. Tasks from lists other
-// than defaultList are marked with their list name.
-func execute(ctx context.Context, b backend, cmd command, out io.Writer, defaultList string) error {
+// execute runs cmd and prints the result.
+func (a *app) execute(ctx context.Context, cmd command) error {
+	b, out := a.b, a.out
 	now := time.Now()
 	show := func(task focus.Task, ok bool) {
 		if !ok {
 			fmt.Fprintln(out, "No open tasks.")
 			return
 		}
-		fmt.Fprintln(out, formatTask(task, now, defaultList))
+		fmt.Fprintln(out, formatTask(task, now, a.defaultList))
 	}
 
 	switch cmd.name {
@@ -161,11 +179,7 @@ func execute(ctx context.Context, b backend, cmd command, out io.Writer, default
 		show(next, ok)
 
 	case "add":
-		list, err := b.Add(ctx, caldav.NewUID(), cmd.summary)
-		if err != nil {
-			return err
-		}
-		fmt.Fprintf(out, "Added to %s.\n", list)
+		return a.add(ctx, cmd.summary)
 
 	default:
 		return fmt.Errorf("unknown command %q", cmd.name)

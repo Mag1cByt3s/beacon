@@ -47,7 +47,7 @@ To run the server in a FreeBSD jail, see [docs/deploy.md](docs/deploy.md).
 ```sh
 t                         # show the current task
 t buy coffee              # add a task to the default list
-t list                    # open tasks, current first
+t list                    # open tasks as a checklist, current first
 t focus                   # only the current task
 t done                    # complete the current task, then show the next one
 t skip                    # skip the current task for now (server only)
@@ -66,6 +66,10 @@ on the phone.
 `t done` never overwrites a task that was changed elsewhere (for example on
 the phone). With the server it tells you what the task looks like now; run
 `t done` again to complete it as it is.
+
+In a terminal, `t list` draws a checklist with the current task marked and
+long titles wrapped; `NO_COLOR=1` turns off its colours. When the output goes
+to a pipe or file, it prints one plain title per line instead.
 
 ### Removing tasks
 

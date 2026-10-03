@@ -32,6 +32,9 @@ func main() {
 
 func run(log *slog.Logger) error {
 	cfg := config.Load()
+	if err := cfg.ReadTokenFile(true); err != nil {
+		return err
+	}
 	if err := cfg.CheckServer(); err != nil {
 		return err
 	}

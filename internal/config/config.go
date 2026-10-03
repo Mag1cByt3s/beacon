@@ -28,6 +28,7 @@ type Config struct {
 	// The beacon server.
 	ServerURL string // where t finds the server; empty means talk to CalDAV directly
 	Token     string // API bearer token
+	TokenFile string // file holding the token; see ReadTokenFile
 	Listen    string // address the server listens on
 	DB        string // SQLite file for focus state
 }
@@ -43,6 +44,7 @@ func Load() Config {
 		DefaultList: env("BEACON_DEFAULT_LIST"),
 		ServerURL:   env("BEACON_SERVER_URL"),
 		Token:       env("BEACON_TOKEN"),
+		TokenFile:   env("BEACON_TOKEN_FILE"),
 		Listen:      env("BEACON_LISTEN"),
 		DB:          env("BEACON_DB"),
 	}
@@ -84,10 +86,10 @@ func (c Config) CheckServer() error {
 		return err
 	}
 	if c.Token == "" {
-		return errors.New("BEACON_TOKEN is not set; the server will not start without it (create one with: openssl rand -hex 32)")
+		return errors.New("BEACON_TOKEN_FILE or BEACON_TOKEN is not set; the server will not start without a token (create one with: openssl rand -hex 32)")
 	}
 	if len(c.Token) < MinTokenLength {
-		return fmt.Errorf("BEACON_TOKEN is too short; use at least %d characters (create one with: openssl rand -hex 32)", MinTokenLength)
+		return fmt.Errorf("the token is too short; use at least %d characters (create one with: openssl rand -hex 32)", MinTokenLength)
 	}
 	return nil
 }
@@ -95,8 +97,40 @@ func (c Config) CheckServer() error {
 // CheckAPI checks the settings t needs to talk to the beacon server.
 func (c Config) CheckAPI() error {
 	if c.Token == "" {
-		return errors.New("BEACON_TOKEN is not set (needed because BEACON_SERVER_URL is set)")
+		return errors.New("BEACON_TOKEN_FILE or BEACON_TOKEN is not set (needed because BEACON_SERVER_URL is set)")
 	}
+	return nil
+}
+
+// ReadTokenFile reads the token from TokenFile, if it is set, and puts it
+// in Token: a token file takes precedence over BEACON_TOKEN. Surrounding
+// whitespace, such as the final newline, is removed.
+//
+// With private set (the server does this), a file that other users may
+// read or write is refused, so a token cannot leak or be swapped by
+// accident.
+func (c *Config) ReadTokenFile(private bool) error {
+	if c.TokenFile == "" {
+		return nil
+	}
+	info, err := os.Stat(c.TokenFile)
+	if err != nil {
+		return fmt.Errorf("cannot read BEACON_TOKEN_FILE: %w", err)
+	}
+	// Perm()&0o077 keeps only the group and other bits (rwx for each).
+	if private && info.Mode().Perm()&0o077 != 0 {
+		return fmt.Errorf("BEACON_TOKEN_FILE %s can be accessed by other users (mode %04o); run: chmod 600 %s",
+			c.TokenFile, info.Mode().Perm(), c.TokenFile)
+	}
+	data, err := os.ReadFile(c.TokenFile)
+	if err != nil {
+		return fmt.Errorf("cannot read BEACON_TOKEN_FILE: %w", err)
+	}
+	token := strings.TrimSpace(string(data))
+	if token == "" {
+		return fmt.Errorf("BEACON_TOKEN_FILE %s is empty", c.TokenFile)
+	}
+	c.Token = token
 	return nil
 }
 

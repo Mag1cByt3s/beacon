@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -47,11 +48,14 @@ func TestPrompt(t *testing.T) {
 	}
 }
 
-// clearBeaconEnv empties all beacon variables for the test.
+// clearBeaconEnv empties all beacon variables for the test and points
+// the offline queue at a temporary directory, so tests never touch the
+// user's real queue.
 func clearBeaconEnv(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	for _, name := range []string{
 		"BEACON_CALDAV_URL", "BEACON_CALDAV_USER", "BEACON_CALDAV_PASSWORD_CMD",
-		"BEACON_LISTS", "BEACON_DEFAULT_LIST", "BEACON_SERVER_URL", "BEACON_TOKEN",
+		"BEACON_LISTS", "BEACON_DEFAULT_LIST", "BEACON_SERVER_URL", "BEACON_TOKEN", "BEACON_TOKEN_FILE",
 	} {
 		t.Setenv(name, "")
 	}
@@ -123,6 +127,29 @@ func TestPromptCommandShowsTask(t *testing.T) {
 
 	if out := runPromptCommand(t); out != "Pay rent\n" {
 		t.Errorf("output = %q, want the task", out)
+	}
+}
+
+func TestClientUsesTokenFile(t *testing.T) {
+	var gotAuth string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		w.Write([]byte(`{"task":null}`))
+	}))
+	defer srv.Close()
+
+	path := filepath.Join(t.TempDir(), "token")
+	os.WriteFile(path, []byte("token-from-the-file\n"), 0o600)
+	clearBeaconEnv(t)
+	t.Setenv("BEACON_SERVER_URL", srv.URL)
+	t.Setenv("BEACON_TOKEN", "token-from-env")
+	t.Setenv("BEACON_TOKEN_FILE", path)
+
+	if err := run([]string{"focus"}, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	if gotAuth != "Bearer token-from-the-file" {
+		t.Errorf("Authorization = %q, want the token from the file", gotAuth)
 	}
 }
 

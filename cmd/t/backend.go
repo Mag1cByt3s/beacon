@@ -27,6 +27,9 @@ type backend interface {
 // stderr is passed on to the password command (nil keeps it silent).
 func newBackend(ctx context.Context, cfg config.Config, stderr io.Writer) (backend, error) {
 	if cfg.UseServer() {
+		if err := cfg.ReadTokenFile(false); err != nil {
+			return nil, err
+		}
 		if err := cfg.CheckAPI(); err != nil {
 			return nil, err
 		}

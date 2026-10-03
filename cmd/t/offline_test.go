@@ -84,7 +84,7 @@ func unreachableCalDAV(t *testing.T) error {
 	srv := httptest.NewServer(nil)
 	srv.Close()
 	c, _ := caldav.NewClient(srv.URL+"/", "", "", []string{"Todo"})
-	_, err := c.Create(context.Background(), "Todo", caldav.NewUID(), "x")
+	_, _, err := c.Create(context.Background(), "Todo", caldav.NewUID(), "x")
 	if !errors.Is(err, caldav.ErrUnreachable) {
 		t.Fatalf("setup: %v", err)
 	}

@@ -83,10 +83,34 @@ func NewServer(t testing.TB) (*httptest.Server, *Backend) {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
+		if r.Method == http.MethodDelete {
+			b.serveDelete(w, r)
+			return
+		}
 		handler.ServeHTTP(w, r)
 	}))
 	t.Cleanup(srv.Close)
 	return srv, b
+}
+
+// serveDelete answers DELETE like Radicale does: 404 if the object does not
+// exist, 412 if an If-Match header does not match its ETag. go-webdav's
+// handler does not pass If-Match on to the backend for DELETE, so it is
+// handled here.
+func (b *Backend) serveDelete(w http.ResponseWriter, r *http.Request) {
+	obj, ok := b.Find(r.URL.Path)
+	if !ok {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+	if ifMatch := webdav.ConditionalMatch(r.Header.Get("If-Match")); ifMatch.IsSet() {
+		if match, err := ifMatch.MatchETag(obj.ETag); err != nil || !match {
+			http.Error(w, "etag mismatch", http.StatusPreconditionFailed)
+			return
+		}
+	}
+	b.Remove(r.URL.Path)
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // Parse decodes iCalendar lines wrapped in a VCALENDAR.

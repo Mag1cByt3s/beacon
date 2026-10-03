@@ -45,12 +45,15 @@ func TestCreate(t *testing.T) {
 	c, backend := newTestClient(t)
 
 	uid := NewUID()
-	name, err := c.Create(context.Background(), "todo", uid, "Buy coffee, beans; fresh")
+	name, etag, err := c.Create(context.Background(), "todo", uid, "Buy coffee, beans; fresh")
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 	if name != "Todo" {
 		t.Errorf("list name = %q, want Todo", name)
+	}
+	if obj, _ := backend.Find(caldavtest.TodoPath + uid + ".ics"); etag == "" || etag != obj.ETag {
+		t.Errorf("ETag = %q, want the stored version %q", etag, obj.ETag)
 	}
 
 	objects := backend.Objects[caldavtest.TodoPath]
@@ -93,7 +96,7 @@ func TestCreate(t *testing.T) {
 
 func TestCreateUnknownList(t *testing.T) {
 	c, _ := newTestClient(t)
-	_, err := c.Create(context.Background(), "Nope", NewUID(), "x")
+	_, _, err := c.Create(context.Background(), "Nope", NewUID(), "x")
 	if err == nil || !strings.Contains(err.Error(), "BEACON_DEFAULT_LIST") {
 		t.Errorf("err = %v, want a hint about BEACON_DEFAULT_LIST", err)
 	}
@@ -102,7 +105,7 @@ func TestCreateUnknownList(t *testing.T) {
 func TestCreateNeverOverwrites(t *testing.T) {
 	c, _ := newTestClient(t)
 	// Try to "create" on top of an existing object, as a UID collision would.
-	err := c.put(context.Background(), caldavtest.TodoPath+"1.ics",
+	_, err := c.put(context.Background(), caldavtest.TodoPath+"1.ics",
 		newTodo("open", "x", time.Now()), "If-None-Match", "*")
 	if !errors.Is(err, ErrConflict) {
 		t.Errorf("err = %v, want ErrConflict", err)
@@ -242,6 +245,51 @@ func TestCompleteRefusesRecurring(t *testing.T) {
 	}
 }
 
+func TestDelete(t *testing.T) {
+	c, backend := newTestClient(t)
+	task := openTask(t, c, "open")
+
+	if err := c.Delete(context.Background(), task); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+	if _, ok := backend.Find(caldavtest.TodoPath + "1.ics"); ok {
+		t.Error("the task is still on the server")
+	}
+	// Deleting it again: it is already gone.
+	if err := c.Delete(context.Background(), task); !errors.Is(err, ErrGone) {
+		t.Errorf("second Delete: err = %v, want ErrGone", err)
+	}
+}
+
+func TestDeleteChangedSinceRead(t *testing.T) {
+	c, backend := newTestClient(t)
+	task := openTask(t, c, "open")
+	backend.Edit(t, caldavtest.TodoPath+"1.ics", "Open task, edited")
+
+	if err := c.Delete(context.Background(), task); !errors.Is(err, ErrConflict) {
+		t.Fatalf("err = %v, want ErrConflict", err)
+	}
+	if _, ok := backend.Find(caldavtest.TodoPath + "1.ics"); !ok {
+		t.Error("a task edited elsewhere was deleted")
+	}
+}
+
+func TestDeleteRefusesRecurring(t *testing.T) {
+	c, backend := newTestClient(t)
+	path := caldavtest.TodoPath + "weekly.ics"
+	backend.Add(t, path,
+		"BEGIN:VTODO", "UID:weekly", "DTSTAMP:20261001T100000Z", "SUMMARY:Water plants",
+		"RRULE:FREQ=WEEKLY", "END:VTODO")
+
+	task := openTask(t, c, "weekly")
+	if err := c.Delete(context.Background(), task); !errors.Is(err, ErrRecurring) {
+		t.Errorf("err = %v, want ErrRecurring", err)
+	}
+	if _, ok := backend.Find(path); !ok {
+		t.Error("a recurring task was deleted")
+	}
+}
+
 func TestNewUID(t *testing.T) {
 	a, b := NewUID(), NewUID()
 	if a == b || len(a) != 36 || a[14] != '4' || !ValidUID(a) {
@@ -276,11 +324,11 @@ func TestCreateRetryMakesNoDuplicate(t *testing.T) {
 	uid := NewUID()
 	ctx := context.Background()
 
-	if _, err := c.Create(ctx, "Todo", uid, "Buy coffee"); err != nil {
+	if _, _, err := c.Create(ctx, "Todo", uid, "Buy coffee"); err != nil {
 		t.Fatal(err)
 	}
 	// The same capture again, as after a lost answer.
-	if _, err := c.Create(ctx, "Todo", uid, "Buy coffee"); !errors.Is(err, ErrExists) {
+	if _, _, err := c.Create(ctx, "Todo", uid, "Buy coffee"); !errors.Is(err, ErrExists) {
 		t.Errorf("retry: err = %v, want ErrExists", err)
 	}
 	if n := len(backend.Objects[caldavtest.TodoPath]); n != 3 {
@@ -290,7 +338,7 @@ func TestCreateRetryMakesNoDuplicate(t *testing.T) {
 
 func TestCreateRejectsBadUID(t *testing.T) {
 	c, _ := newTestClient(t)
-	if _, err := c.Create(context.Background(), "Todo", "../groceries/x", "x"); !errors.Is(err, ErrInvalidUID) {
+	if _, _, err := c.Create(context.Background(), "Todo", "../groceries/x", "x"); !errors.Is(err, ErrInvalidUID) {
 		t.Errorf("err = %v, want ErrInvalidUID", err)
 	}
 }
@@ -307,7 +355,7 @@ func TestUnreachable(t *testing.T) {
 	if _, err := c.OpenTasks(ctx); !errors.Is(err, ErrUnreachable) {
 		t.Errorf("OpenTasks: err = %v, want ErrUnreachable", err)
 	}
-	if _, err := c.Create(ctx, "Todo", NewUID(), "x"); !errors.Is(err, ErrUnreachable) {
+	if _, _, err := c.Create(ctx, "Todo", NewUID(), "x"); !errors.Is(err, ErrUnreachable) {
 		t.Errorf("Create: err = %v, want ErrUnreachable", err)
 	}
 }
@@ -315,7 +363,7 @@ func TestUnreachable(t *testing.T) {
 func TestLoginErrorIsNotUnreachable(t *testing.T) {
 	srv, _ := caldavtest.NewServer(t)
 	c, _ := NewClient(srv.URL+"/", caldavtest.User, "wrong", []string{"Todo"})
-	_, err := c.Create(context.Background(), "Todo", NewUID(), "x")
+	_, _, err := c.Create(context.Background(), "Todo", NewUID(), "x")
 	if err == nil || errors.Is(err, ErrUnreachable) {
 		t.Errorf("err = %v, want a login error that is not ErrUnreachable", err)
 	}

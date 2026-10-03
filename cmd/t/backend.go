@@ -89,7 +89,8 @@ func (d direct) Current(ctx context.Context) (focus.Task, bool, error) {
 }
 
 func (d direct) Add(ctx context.Context, uid, summary string) (string, error) {
-	return d.client.Create(ctx, d.defaultList, uid, summary)
+	list, _, err := d.client.Create(ctx, d.defaultList, uid, summary)
+	return list, err
 }
 
 // Done completes the first task in the queue and returns the one after it,

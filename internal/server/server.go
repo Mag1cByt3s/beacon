@@ -27,7 +27,7 @@ const requestTimeout = 25 * time.Second
 // Tasks is the task storage the server needs. *caldav.Client provides it.
 type Tasks interface {
 	OpenTasks(ctx context.Context) ([]focus.Task, error)
-	Create(ctx context.Context, list, uid, summary string) (string, error)
+	Create(ctx context.Context, list, uid, summary string) (listName, etag string, err error)
 	Complete(ctx context.Context, task focus.Task) error
 }
 
@@ -150,7 +150,7 @@ func (s *Server) addTask(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Adding a task does not touch the focus state, so no lock is needed.
-	list, err := s.tasks.Create(ctx, s.defaultList, uid, summary)
+	list, _, err := s.tasks.Create(ctx, s.defaultList, uid, summary)
 	switch {
 	case errors.Is(err, caldav.ErrInvalidUID):
 		writeJSON(w, http.StatusBadRequest, api.ErrorResponse{Error: err.Error()})

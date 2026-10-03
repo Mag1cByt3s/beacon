@@ -28,40 +28,66 @@ var ErrRecurring = errors.New("recurring tasks are completed on the phone, not w
 // safe in a file name on the server.
 var ErrInvalidUID = errors.New("invalid task uid: use letters, digits, '-', '_', '.' and '@' (at most 128)")
 
+// ErrGone means the task no longer exists on the server (it was deleted
+// elsewhere).
+var ErrGone = errors.New("the task no longer exists on the server")
+
 // ErrExists means a task with this UID already exists. When a capture is
 // retried with the same UID, this means the first attempt got through.
 var ErrExists = errors.New("a task with this uid already exists")
 
 // Create adds a new task with the given UID and title to the list called
-// list, and returns the list's name as shown on the server. Make the UID
-// with NewUID. Because the UID decides the file name and existing files are
+// list. It returns the list's name as shown on the server and the new
+// task's ETag (empty if the server did not send one). Make the UID with
+// NewUID. Because the UID decides the file name and existing files are
 // never overwritten, retrying with the same UID cannot create a duplicate:
 // the retry fails with ErrExists instead.
-func (c *Client) Create(ctx context.Context, list, uid, summary string) (string, error) {
+func (c *Client) Create(ctx context.Context, list, uid, summary string) (listName, etag string, err error) {
 	if !ValidUID(uid) {
-		return "", ErrInvalidUID
+		return "", "", ErrInvalidUID
 	}
 	taskLists, err := c.taskLists(ctx)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	cal, err := findList(taskLists, list)
 	if err != nil {
-		return "", fmt.Errorf("%w; check BEACON_DEFAULT_LIST", err)
+		return "", "", fmt.Errorf("%w; check BEACON_DEFAULT_LIST", err)
 	}
 
 	objectPath := strings.TrimSuffix(cal.Path, "/") + "/" + uid + ".ics"
 
 	// "If-None-Match: *" tells the server to refuse if the file already
 	// exists, so a new task can never overwrite another one.
-	err = c.put(ctx, objectPath, newTodo(uid, summary, time.Now()), "If-None-Match", "*")
+	etag, err = c.put(ctx, objectPath, newTodo(uid, summary, time.Now()), "If-None-Match", "*")
 	if errors.Is(err, ErrConflict) {
-		return "", ErrExists
+		return "", "", ErrExists
 	}
 	if err != nil {
-		return "", friendlyError(fmt.Errorf("cannot add the task: %w", err))
+		return "", "", friendlyError(fmt.Errorf("cannot add the task: %w", err))
 	}
-	return cal.Name, nil
+	return cal.Name, etag, nil
+}
+
+// Delete removes task from the server for good. task must come from
+// OpenTasks; its ETag says which version may be deleted. If the task was
+// changed elsewhere since, nothing is deleted and ErrConflict is returned;
+// if it is already gone, ErrGone. Recurring tasks are refused.
+func (c *Client) Delete(ctx context.Context, task focus.Task) error {
+	if task.Recurring {
+		return ErrRecurring
+	}
+	if task.Path == "" || task.ETag == "" {
+		return errors.New("cannot delete a task that was not read from the server")
+	}
+
+	// "If-Match" makes the server refuse if the task changed since it was
+	// read, so a task edited on the phone is never deleted by accident.
+	_, err := c.send(ctx, http.MethodDelete, task.Path, nil, "If-Match", quoteETag(task.ETag))
+	if err != nil && !errors.Is(err, ErrConflict) && !errors.Is(err, ErrGone) {
+		return friendlyError(fmt.Errorf("cannot remove the task: %w", err))
+	}
+	return err
 }
 
 // Complete marks task as done on the server. task must come from OpenTasks,
@@ -93,7 +119,7 @@ func (c *Client) Complete(ctx context.Context, task focus.Task) error {
 
 	// "If-Match" makes the server refuse the write if the task changed
 	// between our read and this write.
-	err = c.put(ctx, task.Path, obj.Data, "If-Match", quoteETag(task.ETag))
+	_, err = c.put(ctx, task.Path, obj.Data, "If-Match", quoteETag(task.ETag))
 	if err != nil {
 		return friendlyError(fmt.Errorf("cannot complete the task: %w", err))
 	}
@@ -156,40 +182,60 @@ func markCompleted(cal *ical.Calendar, now time.Time) error {
 }
 
 // put uploads cal to objectPath with one conditional header (If-Match or
-// If-None-Match). go-webdav's own PutCalendarObject cannot send those yet.
-func (c *Client) put(ctx context.Context, objectPath string, cal *ical.Calendar, condition, value string) error {
+// If-None-Match) and returns the new ETag. go-webdav's own
+// PutCalendarObject cannot send those headers yet.
+func (c *Client) put(ctx context.Context, objectPath string, cal *ical.Calendar, condition, value string) (string, error) {
 	var body bytes.Buffer
 	if err := ical.NewEncoder(&body).Encode(cal); err != nil {
-		return err
+		return "", err
 	}
+	return c.send(ctx, http.MethodPut, objectPath, &body, condition, value)
+}
 
+// send makes one PUT or DELETE request with one conditional header and
+// returns the ETag from the answer, if any. A failed condition (412)
+// becomes ErrConflict, a missing object on DELETE (404) ErrGone.
+func (c *Client) send(ctx context.Context, method, objectPath string, body io.Reader, condition, value string) (string, error) {
 	// Paths from the server are absolute ("/pascal/todo/x.ics"), so they
 	// replace the path of the base URL.
 	target := c.base.ResolveReference(&url.URL{Path: objectPath})
 	// NewRequestWithContext ties the request to ctx, so it is cancelled
 	// when ctx times out.
-	req, err := http.NewRequestWithContext(ctx, http.MethodPut, target.String(), &body)
+	req, err := http.NewRequestWithContext(ctx, method, target.String(), body)
 	if err != nil {
-		return err
+		return "", err
 	}
-	req.Header.Set("Content-Type", ical.MIMEType+"; charset=utf-8")
+	if body != nil {
+		req.Header.Set("Content-Type", ical.MIMEType+"; charset=utf-8")
+	}
 	req.Header.Set(condition, value)
 
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return err
+		return "", err
 	}
 	defer resp.Body.Close()
 
 	switch {
 	case resp.StatusCode == http.StatusPreconditionFailed:
-		return ErrConflict
+		return "", ErrConflict
+	case resp.StatusCode == http.StatusNotFound && method == http.MethodDelete:
+		return "", ErrGone
 	case resp.StatusCode/100 != 2:
 		// Include a little of the server's explanation, if any.
 		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 200))
-		return fmt.Errorf("server answered %s %s", resp.Status, strings.TrimSpace(string(msg)))
+		return "", fmt.Errorf("server answered %s %s", resp.Status, strings.TrimSpace(string(msg)))
 	}
-	return nil
+	return unquoteETag(resp.Header.Get("ETag")), nil
+}
+
+// unquoteETag turns an ETag header ("\"abc\"") into the form go-webdav
+// uses (abc). Weak ETags (W/"abc") are kept as they are.
+func unquoteETag(etag string) string {
+	if len(etag) >= 2 && strings.HasPrefix(etag, `"`) && strings.HasSuffix(etag, `"`) {
+		return etag[1 : len(etag)-1]
+	}
+	return etag
 }
 
 // quoteETag turns an ETag back into its header form. go-webdav hands out

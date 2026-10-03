@@ -3,3 +3,4 @@
 /beacon
 .direnv/
 result
+result-*

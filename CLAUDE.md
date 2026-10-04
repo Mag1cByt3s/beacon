@@ -55,6 +55,7 @@ internal/config/  config from environment variables
 - `github.com/emersion/go-ical` (iCalendar parsing)
 - SQLite from milestone 3: `modernc.org/sqlite` (pure Go, so it cross-compiles to FreeBSD without cgo)
 - `golang.org/x/term` (terminal width and detection for `t list`)
+- `charm.land/bubbletea/v2` and `charm.land/bubbles/v2` (the full-screen `t edit`)
 - Ask before adding anything else.
 
 ## Important constraints

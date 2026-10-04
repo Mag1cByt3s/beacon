@@ -86,12 +86,12 @@ A single word that looks like a mistyped command (`t lsit`) is not added;
 
 ### Editing tasks
 
-`t edit` opens a full-screen editor on the open tasks. Move with the arrow
-keys, press enter to rename the selected task, `a` to add one, `d` to remove
+`t edit` opens a full-screen editor on the open tasks. Select a task with the
+arrow keys, press enter to rename it, `a` to add one, `d` to remove
 it (after a y/n question) and `q` to quit. Each change is saved right away,
 so it reaches the phone and KDE like any other change, and a task that was
-changed elsewhere in the meantime is left alone. The order of the list is
-beacon's usual one.
+changed elsewhere in the meantime is left alone. Tasks cannot be moved: the
+order is beacon's usual one (set a due date or priority to change it).
 
 ### Offline captures
 

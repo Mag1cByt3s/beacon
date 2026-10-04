@@ -94,7 +94,7 @@ func screen(m editModel) string { return m.View().Content }
 func TestEditShowsTheList(t *testing.T) {
 	m := newEditor(t, &fakeBackend{tasks: someTasks()})
 	view := screen(m)
-	for _, want := range []string{"t edit · Todo · 3 open", "❯ ● Offsec notes aufnehmen", "○ buy cofee", "○ lsit", "q quit"} {
+	for _, want := range []string{"t edit · Todo · 3 open", "❯ ● Offsec notes aufnehmen", "○ buy cofee", "○ lsit", "↑↓ select", "q quit"} {
 		if !strings.Contains(view, want) {
 			t.Errorf("screen lacks %q:\n%s", want, view)
 		}

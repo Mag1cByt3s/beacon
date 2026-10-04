@@ -30,7 +30,7 @@ import (
 type editMode int
 
 const (
-	browsing   editMode = iota // moving through the list
+	browsing   editMode = iota // selecting a task in the list
 	renaming                   // typing a new title for the selected task
 	adding                     // typing the title of a new task
 	confirming                 // asking whether to remove the selected task
@@ -155,7 +155,7 @@ func (m editModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// updateBrowsing handles keys while moving through the list.
+// updateBrowsing handles keys while selecting a task in the list.
 func (m editModel) updateBrowsing(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "q", "esc":
@@ -348,7 +348,7 @@ func (m editModel) View() tea.View {
 		} else {
 			b.WriteString(" " + t.style(ansiDim, status) + "\n")
 		}
-		b.WriteString(t.style(ansiDim, " ↑↓ move · enter rename · a add · d remove · r reload · q quit") + "\n")
+		b.WriteString(t.style(ansiDim, " ↑↓ select · enter rename · a add · d remove · r reload · q quit") + "\n")
 	}
 
 	v := tea.NewView(b.String())

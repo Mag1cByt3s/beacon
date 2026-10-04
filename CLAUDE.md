@@ -81,6 +81,7 @@ internal/config/  config from environment variables
 | `BEACON_TOKEN_FILE` | file holding the token; takes precedence over `BEACON_TOKEN`; the server refuses a file other users can read (from milestone 5) | `/usr/local/etc/beacon/token` |
 | `BEACON_LISTEN` | server listen address (from milestone 3) | `127.0.0.1:8080` (default) |
 | `BEACON_DB` | server SQLite file for focus state (from milestone 3) | `/var/db/beacon/beacon.db` |
+| `BEACON_TRUSTED_PROXIES` | comma-separated IPs/CIDRs of reverse proxies whose `X-Forwarded-For` the server believes (rightmost untrusted entry is the client); empty by default, header ignored otherwise | `10.0.0.4` |
 
 Run the password command without a shell (split into argv), trim the trailing newline, and never log it.
 

@@ -58,9 +58,17 @@ func run(log *slog.Logger) error {
 	}
 	defer st.Close()
 
+	// CheckServer has already made sure the proxy list can be parsed.
+	proxies, err := cfg.ProxyPrefixes()
+	if err != nil {
+		return err
+	}
+	apiServer := server.New(client, st, cfg.Token, cfg.DefaultList, log)
+	apiServer.TrustedProxies = proxies
+
 	srv := &http.Server{
 		Addr:              cfg.Listen,
-		Handler:           server.New(client, st, cfg.Token, cfg.DefaultList, log).Handler(),
+		Handler:           apiServer.Handler(),
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,
 		WriteTimeout:      60 * time.Second,
@@ -75,7 +83,8 @@ func run(log *slog.Logger) error {
 	// an error or a stop signal.
 	errc := make(chan error, 1)
 	go func() {
-		log.Info("beacon listening", "addr", cfg.Listen, "db", cfg.DB, "lists", cfg.Lists, "default_list", cfg.DefaultList)
+		log.Info("beacon listening", "addr", cfg.Listen, "db", cfg.DB, "lists", cfg.Lists,
+			"default_list", cfg.DefaultList, "trusted_proxies", cfg.TrustedProxies)
 		errc <- srv.ListenAndServe()
 	}()
 

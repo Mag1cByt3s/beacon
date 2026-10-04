@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/netip"
 	"os"
 	"os/exec"
 	"strings"
@@ -31,6 +32,10 @@ type Config struct {
 	TokenFile string // file holding the token; see ReadTokenFile
 	Listen    string // address the server listens on
 	DB        string // SQLite file for focus state
+
+	// Addresses or CIDR ranges of reverse proxies whose X-Forwarded-For
+	// header the server believes; see ProxyPrefixes.
+	TrustedProxies []string
 }
 
 // Load reads the configuration from the environment and fills in defaults.
@@ -47,6 +52,8 @@ func Load() Config {
 		TokenFile:   env("BEACON_TOKEN_FILE"),
 		Listen:      env("BEACON_LISTEN"),
 		DB:          env("BEACON_DB"),
+
+		TrustedProxies: splitList(os.Getenv("BEACON_TRUSTED_PROXIES")),
 	}
 	if len(c.Lists) == 0 {
 		c.Lists = []string{"Todo"}
@@ -91,7 +98,38 @@ func (c Config) CheckServer() error {
 	if len(c.Token) < MinTokenLength {
 		return fmt.Errorf("the token is too short; use at least %d characters (create one with: openssl rand -hex 32)", MinTokenLength)
 	}
+	if _, err := c.ProxyPrefixes(); err != nil {
+		return err
+	}
 	return nil
+}
+
+// ProxyPrefixes parses TrustedProxies into address ranges. A single
+// address ("10.0.0.4") becomes a range of just that address.
+func (c Config) ProxyPrefixes() ([]netip.Prefix, error) {
+	var prefixes []netip.Prefix
+	for _, s := range c.TrustedProxies {
+		if strings.Contains(s, "/") {
+			p, err := netip.ParsePrefix(s)
+			if err != nil {
+				return nil, badProxy(s)
+			}
+			// Masked turns 10.0.0.7/24 into 10.0.0.0/24.
+			prefixes = append(prefixes, p.Masked())
+			continue
+		}
+		addr, err := netip.ParseAddr(s)
+		if err != nil {
+			return nil, badProxy(s)
+		}
+		addr = addr.Unmap() // ::ffff:10.0.0.4 is the IPv4 address 10.0.0.4
+		prefixes = append(prefixes, netip.PrefixFrom(addr, addr.BitLen()))
+	}
+	return prefixes, nil
+}
+
+func badProxy(s string) error {
+	return fmt.Errorf("BEACON_TRUSTED_PROXIES: %q is not an IP address or CIDR range (example: 10.0.0.4 or 10.0.0.0/24)", s)
 }
 
 // CheckAPI checks the settings t needs to talk to the beacon server.

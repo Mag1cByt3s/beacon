@@ -17,6 +17,7 @@ func clearEnv(t *testing.T) {
 		"BEACON_CALDAV_URL", "BEACON_CALDAV_USER", "BEACON_CALDAV_PASSWORD_CMD",
 		"BEACON_LISTS", "BEACON_DEFAULT_LIST",
 		"BEACON_SERVER_URL", "BEACON_TOKEN", "BEACON_TOKEN_FILE", "BEACON_LISTEN", "BEACON_DB",
+		"BEACON_TRUSTED_PROXIES",
 	} {
 		t.Setenv(name, "")
 	}
@@ -71,6 +72,12 @@ func TestChecks(t *testing.T) {
 			map[string]string{"BEACON_CALDAV_URL": url, "BEACON_TOKEN": "short"},
 			Config.CheckServer, "too short"},
 		{"server needs caldav", map[string]string{"BEACON_TOKEN": token}, Config.CheckServer, "BEACON_CALDAV_URL"},
+		{"server with trusted proxies",
+			map[string]string{"BEACON_CALDAV_URL": url, "BEACON_TOKEN": token, "BEACON_TRUSTED_PROXIES": "10.0.0.4, 192.168.1.0/24,::1"},
+			Config.CheckServer, ""},
+		{"server with a bad trusted proxy",
+			map[string]string{"BEACON_CALDAV_URL": url, "BEACON_TOKEN": token, "BEACON_TRUSTED_PROXIES": "10.0.0.4,caddy"},
+			Config.CheckServer, `"caddy" is not an IP address`},
 		{"api ok", map[string]string{"BEACON_SERVER_URL": "https://beacon.example.org", "BEACON_TOKEN": "x"}, Config.CheckAPI, ""},
 		{"api without token", map[string]string{"BEACON_SERVER_URL": "https://beacon.example.org"}, Config.CheckAPI, "BEACON_TOKEN"},
 	}
@@ -171,6 +178,37 @@ func TestLoadTokenFile(t *testing.T) {
 	c := Load()
 	if c.TokenFile != path {
 		t.Errorf("TokenFile = %q, want %q", c.TokenFile, path)
+	}
+}
+
+func TestProxyPrefixes(t *testing.T) {
+	tests := []struct {
+		in      []string
+		want    []string
+		wantErr bool
+	}{
+		{nil, nil, false},
+		{[]string{"10.0.0.4"}, []string{"10.0.0.4/32"}, false},
+		{[]string{"10.0.0.7/24"}, []string{"10.0.0.0/24"}, false},
+		{[]string{"::1", "fd00::/8"}, []string{"::1/128", "fd00::/8"}, false},
+		{[]string{"::ffff:10.0.0.4"}, []string{"10.0.0.4/32"}, false},
+		{[]string{"10.0.0.300"}, nil, true},
+		{[]string{"10.0.0.0/33"}, nil, true},
+		{[]string{"proxy.example.org"}, nil, true},
+	}
+	for _, tt := range tests {
+		got, err := Config{TrustedProxies: tt.in}.ProxyPrefixes()
+		if (err != nil) != tt.wantErr {
+			t.Errorf("%q: err = %v, want error %v", tt.in, err, tt.wantErr)
+			continue
+		}
+		var gotStrings []string
+		for _, p := range got {
+			gotStrings = append(gotStrings, p.String())
+		}
+		if !reflect.DeepEqual(gotStrings, tt.want) {
+			t.Errorf("%q: got %q, want %q", tt.in, gotStrings, tt.want)
+		}
 	}
 }
 

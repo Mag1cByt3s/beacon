@@ -11,6 +11,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"net/netip"
 	"strings"
 	"sync"
 	"time"
@@ -42,6 +43,10 @@ type Server struct {
 	log         *slog.Logger
 	now         func() time.Time // replaceable in tests
 
+	// TrustedProxies are the reverse proxies whose X-Forwarded-For header
+	// tells the client's address; see clientIP. Empty: trust no one.
+	TrustedProxies []netip.Prefix
+
 	// mu makes requests that read and change the focus state run one at a
 	// time, so two clients cannot both pick or complete a task at once.
 	mu sync.Mutex
@@ -62,23 +67,37 @@ func New(tasks Tasks, st *store.Store, token, defaultList string, log *slog.Logg
 
 // Handler returns the HTTP handler with all routes, auth and logging.
 func (s *Server) Handler() http.Handler {
-	// Patterns like "GET /current" (Go 1.22+) match method and path.
-	protected := http.NewServeMux()
-	protected.HandleFunc("GET /current", s.getCurrent)
-	protected.HandleFunc("GET /tasks", s.getTasks)
-	protected.HandleFunc("POST /tasks", s.addTask)
-	protected.HandleFunc("DELETE /tasks/{uid}", s.deleteTask)
-	protected.HandleFunc("PATCH /tasks/{uid}", s.renameTask)
-	protected.HandleFunc("POST /current/done", s.done)
-	protected.HandleFunc("POST /current/skip", s.skip)
-
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		w.Write([]byte("ok\n"))
 	})
-	// Everything else, including unknown paths, needs the token.
-	mux.Handle("/", s.requireToken(protected))
+
+	// Every API route needs the token. Patterns like "GET /current"
+	// (Go 1.22+) match method and path.
+	routes := map[string]http.HandlerFunc{
+		"GET /current":        s.getCurrent,
+		"GET /tasks":          s.getTasks,
+		"POST /tasks":         s.addTask,
+		"DELETE /tasks/{uid}": s.deleteTask,
+		"PATCH /tasks/{uid}":  s.renameTask,
+		"POST /current/done":  s.done,
+		"POST /current/skip":  s.skip,
+	}
+	for pattern, handler := range routes {
+		mux.Handle(pattern, s.requireToken(handler))
+	}
+
+	// Anything else is not part of the API: 404, without asking for a
+	// token, so scanners looking for /wp-login.php don't fill the log with
+	// warnings.
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		// Tell logRequests (whose recorder w is) that no route matched.
+		if rec, ok := w.(*statusRecorder); ok {
+			rec.unknownRoute = true
+		}
+		writeJSON(w, http.StatusNotFound, api.ErrorResponse{Error: "not found"})
+	})
 
 	return s.logRequests(mux)
 }
@@ -91,7 +110,7 @@ func (s *Server) requireToken(next http.Handler) http.Handler {
 		// ConstantTimeCompare's time reveals nothing, not even the length.
 		got := sha256.Sum256([]byte(token))
 		if !ok || subtle.ConstantTimeCompare(got[:], s.tokenHash[:]) != 1 {
-			s.log.Warn("rejected request without valid token", "remote", r.RemoteAddr, "path", r.URL.Path)
+			s.log.Warn("rejected request without valid token", "remote", s.clientIP(r), "path", r.URL.Path)
 			w.Header().Set("WWW-Authenticate", "Bearer")
 			writeJSON(w, http.StatusUnauthorized, api.ErrorResponse{Error: "unauthorized"})
 			return
@@ -535,24 +554,87 @@ func (s *Server) logRequests(next http.Handler) http.Handler {
 		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
 		next.ServeHTTP(rec, r)
 
+		// Health checks and requests for unknown routes (scanners) would
+		// drown everything else, so they are only logged at debug level.
+		// A 404 from the API itself (an unknown task UID) stays at info.
 		level := slog.LevelInfo
-		if r.URL.Path == "/healthz" {
-			level = slog.LevelDebug // health checks would drown everything else
+		if r.URL.Path == "/healthz" || rec.unknownRoute {
+			level = slog.LevelDebug
 		}
 		s.log.Log(r.Context(), level, "request",
 			"method", r.Method,
 			"path", r.URL.Path,
 			"status", rec.status,
+			"remote", s.clientIP(r),
 			"duration", time.Since(start).Round(time.Millisecond),
 		)
 	})
+}
+
+// clientIP returns the address of whoever sent the request. If it came
+// through one of the TrustedProxies, the client's address is taken from
+// X-Forwarded-For: each proxy appends the address it got the request from,
+// so the list is read from the right, skipping trusted proxies, and the
+// first other address is the client. Entries further left could have been
+// made up by the client and are never used. From anyone else, the header
+// is ignored.
+func (s *Server) clientIP(r *http.Request) string {
+	remote, ok := parseAddr(r.RemoteAddr)
+	if !ok {
+		return r.RemoteAddr
+	}
+	if !s.trusted(remote) {
+		return remote.String()
+	}
+
+	// The header may be sent more than once; together they form one list.
+	var hops []string
+	for _, value := range r.Header.Values("X-Forwarded-For") {
+		for _, hop := range strings.Split(value, ",") {
+			hops = append(hops, strings.TrimSpace(hop))
+		}
+	}
+
+	client := remote
+	for i := len(hops) - 1; i >= 0; i-- {
+		addr, ok := parseAddr(hops[i])
+		if !ok {
+			break // garbage: keep the last address that could be checked
+		}
+		client = addr
+		if !s.trusted(addr) {
+			break
+		}
+	}
+	return client.String()
+}
+
+func (s *Server) trusted(addr netip.Addr) bool {
+	for _, p := range s.TrustedProxies {
+		if p.Contains(addr) {
+			return true
+		}
+	}
+	return false
+}
+
+// parseAddr reads "10.0.0.4", "10.0.0.4:5678", "::1" or "[::1]:5678".
+func parseAddr(s string) (netip.Addr, bool) {
+	if addr, err := netip.ParseAddr(s); err == nil {
+		return addr.Unmap(), true
+	}
+	if ap, err := netip.ParseAddrPort(s); err == nil {
+		return ap.Addr().Unmap(), true
+	}
+	return netip.Addr{}, false
 }
 
 // statusRecorder remembers the status code a handler wrote. Embedding
 // http.ResponseWriter passes every other method straight through.
 type statusRecorder struct {
 	http.ResponseWriter
-	status int
+	status       int
+	unknownRoute bool // set when no API route matched the request
 }
 
 func (r *statusRecorder) WriteHeader(status int) {

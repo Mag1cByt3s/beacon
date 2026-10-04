@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -37,6 +38,13 @@ type env struct {
 // date or priority, so "milk" comes first by UID.
 func newEnv(t *testing.T) *env {
 	t.Helper()
+	return newEnvWithProxies(t, nil)
+}
+
+// newEnvWithProxies is newEnv with trusted reverse proxies. Test requests
+// come from 127.0.0.1.
+func newEnvWithProxies(t *testing.T, proxies []netip.Prefix) *env {
+	t.Helper()
 	davSrv, backend := caldavtest.NewServer(t)
 	client, err := caldav.NewClient(davSrv.URL+"/", caldavtest.User, caldavtest.Password, []string{"Todo", "Groceries"})
 	if err != nil {
@@ -51,7 +59,9 @@ func newEnv(t *testing.T) *env {
 
 	logs := &bytes.Buffer{}
 	logger := slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
-	srv := httptest.NewServer(New(client, st, testToken, "Todo", logger).Handler())
+	server := New(client, st, testToken, "Todo", logger)
+	server.TrustedProxies = proxies
+	srv := httptest.NewServer(server.Handler())
 	t.Cleanup(srv.Close)
 
 	return &env{t: t, url: srv.URL, caldav: backend, logs: logs, dbPath: dbPath, davStop: davSrv.Close}
@@ -159,7 +169,6 @@ func TestAuth(t *testing.T) {
 		{"POST", "/current/skip", ""},
 		{"DELETE", "/tasks/milk", ""},
 		{"PATCH", "/tasks/milk", `{"summary":"x"}`},
-		{"GET", "/unknown", ""},
 	}
 	for _, a := range auths {
 		for _, ep := range endpoints {
@@ -191,6 +200,121 @@ func TestAuth(t *testing.T) {
 	}
 	if status(e.caldav.Todo(caldavtest.GroceriesPath+"1.ics")) == "COMPLETED" {
 		t.Error("a rejected request completed a task")
+	}
+}
+
+func TestUnknownPathsAre404BeforeAuth(t *testing.T) {
+	e := newEnv(t)
+	tests := []struct {
+		method, path, auth string
+		want               int
+	}{
+		{"GET", "/favicon.ico", "", http.StatusNotFound},
+		{"GET", "/wp-login.php", "Bearer wrong-token-0123456789", http.StatusNotFound},
+		{"POST", "/admin", "", http.StatusNotFound},
+		{"GET", "/", "", http.StatusNotFound},
+		{"PUT", "/tasks", "", http.StatusNotFound}, // not an API route either
+		{"GET", "/favicon.ico", "Bearer " + testToken, http.StatusNotFound},
+		// Known routes still need the token.
+		{"GET", "/current", "", http.StatusUnauthorized},
+		{"DELETE", "/tasks/milk", "", http.StatusUnauthorized},
+	}
+	for _, tt := range tests {
+		var body map[string]any
+		if got := e.doWithAuth(tt.method, tt.path, tt.auth, "", &body); got != tt.want {
+			t.Errorf("%s %s (auth %q): status %d, want %d", tt.method, tt.path, tt.auth, got, tt.want)
+		}
+	}
+
+	// 404s for unknown paths are debug noise, not warnings; the known
+	// routes without a token are still warnings.
+	logs := e.logs.String()
+	for _, line := range strings.Split(logs, "\n") {
+		if strings.Contains(line, "status=404") && !strings.Contains(line, "level=DEBUG") {
+			t.Errorf("404 not logged at debug level: %s", line)
+		}
+		if strings.Contains(line, "level=WARN") && (strings.Contains(line, "favicon") || strings.Contains(line, "wp-login")) {
+			t.Errorf("unknown path logged as a warning: %s", line)
+		}
+	}
+	if strings.Count(logs, "rejected request without valid token") != 2 {
+		t.Errorf("want exactly 2 token warnings (the two known routes):\n%s", logs)
+	}
+}
+
+func TestAPI404IsNotDebugNoise(t *testing.T) {
+	e := newEnv(t)
+	e.do("DELETE", "/tasks/no-such-task", "", nil)
+	for _, line := range strings.Split(e.logs.String(), "\n") {
+		if strings.Contains(line, "path=/tasks/no-such-task") && !strings.Contains(line, "level=INFO") {
+			t.Errorf("a 404 inside the API should stay at info: %s", line)
+		}
+	}
+}
+
+func TestClientIP(t *testing.T) {
+	trusted := []netip.Prefix{
+		netip.MustParsePrefix("10.0.0.4/32"),    // Caddy
+		netip.MustParsePrefix("192.168.1.0/24"), // another proxy in front of it
+	}
+	tests := []struct {
+		name    string
+		remote  string
+		xff     []string
+		proxies []netip.Prefix
+		want    string
+	}{
+		{"no proxies trusted", "10.0.0.4:5555", []string{"203.0.113.7"}, nil, "10.0.0.4"},
+		{"from a trusted proxy", "10.0.0.4:5555", []string{"203.0.113.7"}, trusted, "203.0.113.7"},
+		{"header from an untrusted sender is ignored", "198.51.100.9:5555", []string{"203.0.113.7"}, trusted, "198.51.100.9"},
+		{"made-up entries on the left are skipped", "10.0.0.4:5555", []string{"6.6.6.6, 203.0.113.7"}, trusted, "203.0.113.7"},
+		{"chain of trusted proxies", "10.0.0.4:5555", []string{"203.0.113.7, 192.168.1.20"}, trusted, "203.0.113.7"},
+		{"header sent twice", "10.0.0.4:5555", []string{"6.6.6.6", "203.0.113.7"}, trusted, "203.0.113.7"},
+		{"no header", "10.0.0.4:5555", nil, trusted, "10.0.0.4"},
+		{"garbage keeps the proxy", "10.0.0.4:5555", []string{"not-an-ip"}, trusted, "10.0.0.4"},
+		{"only trusted hops", "10.0.0.4:5555", []string{"192.168.1.20"}, trusted, "192.168.1.20"},
+		{"with a port", "10.0.0.4:5555", []string{"203.0.113.7:4444"}, trusted, "203.0.113.7"},
+		{"IPv6 client", "10.0.0.4:5555", []string{"2001:db8::1"}, trusted, "2001:db8::1"},
+		{"IPv4-mapped proxy address", "[::ffff:10.0.0.4]:5555", []string{"203.0.113.7"}, trusted, "203.0.113.7"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := &Server{TrustedProxies: tt.proxies}
+			r := httptest.NewRequest("GET", "/current", nil)
+			r.RemoteAddr = tt.remote
+			for _, v := range tt.xff {
+				r.Header.Add("X-Forwarded-For", v)
+			}
+			if got := s.clientIP(r); got != tt.want {
+				t.Errorf("clientIP = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestLogsClientIPBehindProxy(t *testing.T) {
+	request := func(e *env) {
+		r, _ := http.NewRequest("GET", e.url+"/current", nil)
+		r.Header.Set("X-Forwarded-For", "203.0.113.7")
+		resp, err := http.DefaultClient.Do(r) // no token: logged as a warning too
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+	}
+
+	// The test client is 127.0.0.1; trusted, its header is believed.
+	e := newEnvWithProxies(t, []netip.Prefix{netip.MustParsePrefix("127.0.0.1/32")})
+	request(e)
+	if logs := e.logs.String(); strings.Count(logs, "remote=203.0.113.7") != 2 {
+		t.Errorf("want the forwarded address in the warning and the request line:\n%s", logs)
+	}
+
+	// Not trusted: the header is ignored.
+	e = newEnv(t)
+	request(e)
+	if logs := e.logs.String(); strings.Contains(logs, "203.0.113.7") || !strings.Contains(logs, "remote=127.0.0.1") {
+		t.Errorf("the header of an untrusted sender was used:\n%s", logs)
 	}
 }
 

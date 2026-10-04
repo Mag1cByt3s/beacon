@@ -21,6 +21,8 @@
 # beacon_token_file (str): File holding the API token.
 #                          Default: "/usr/local/etc/beacon/token"
 # beacon_logfile (str):    Where beacon's log goes.               Default: "/var/log/beacon.log"
+# beacon_pidfile (str):    Pidfile of the daemon(8) supervisor.
+#                          Default: "/var/run/beacon/beacon.pid"
 #
 # Secrets (the token, the Radicale password) live in files under
 # /usr/local/etc/beacon/, mode 0600, owned by beacon_user. Never put them in
@@ -41,35 +43,58 @@ load_rc_config "$name"
 : "${beacon_env_file:=/usr/local/etc/beacon/beacon.env}"
 : "${beacon_token_file:=/usr/local/etc/beacon/token}"
 : "${beacon_logfile:=/var/log/beacon.log}"
+: "${beacon_pidfile:=/var/run/beacon/beacon.pid}"
 
-# daemon(8) supervises beacon: it restarts it 5 seconds after a crash (-r,
-# -R 5), writes its own pid to the pidfile (-P), appends beacon's output to
-# the log file (-o) and reopens that file on SIGHUP for newsyslog (-H).
-# Stopping the service stops daemon, which stops beacon.
-pidfile="/var/run/${name}.pid"
+# Because beacon_user is set, rc.subr starts the command with
+# "su -m beacon_user", so daemon(8) itself already runs unprivileged (and
+# must not get -u). daemon supervises beacon: it restarts it 5 seconds after
+# a crash (-r, -R 5), writes its own pid to the pidfile (-P), appends
+# beacon's output to the log file (-o) and reopens that file on SIGHUP for
+# newsyslog (-H). The pidfile and log file must therefore be writable by
+# beacon_user; beacon_prestart, which runs as root, takes care of that.
+#
+# status, stop and restart find the supervisor through the pidfile: its
+# process title "daemon: beacon[...]" matches procname. Stopping daemon
+# stops beacon too.
+pidfile="${beacon_pidfile}"
 procname="/usr/sbin/daemon"
 command="/usr/sbin/daemon"
-command_args="-f -r -R 5 -H -P ${pidfile} -o ${beacon_logfile} -t ${name} -u ${beacon_user} /usr/local/bin/beacon"
+command_args="-f -r -R 5 -H -P ${pidfile} -o ${beacon_logfile} -t ${name} /usr/local/bin/beacon"
 required_files="${beacon_env_file} ${beacon_token_file}"
 
 start_precmd="beacon_prestart"
 
 beacon_prestart()
 {
-	# The database directory belongs to the beacon user alone.
-	dbdir=$(dirname "${beacon_db}")
-	if [ ! -d "${dbdir}" ]; then
-		install -d -o "${beacon_user}" -g "${beacon_group}" -m 0700 "${dbdir}" || return 1
-	fi
+    # The database directory belongs to the beacon user alone.
+    dbdir=$(dirname "${beacon_db}")
+    if [ ! -d "${dbdir}" ]; then
+        install -d -o "${beacon_user}" -g "${beacon_group}" -m 0700 "${dbdir}" || return 1
+    fi
 
-	# Settings for beacon: first the env file, then the rc.conf values,
-	# which win. "set -a" exports every variable the file sets.
-	set -a
-	. "${beacon_env_file}"
-	set +a
-	export BEACON_LISTEN="${beacon_listen}"
-	export BEACON_DB="${beacon_db}"
-	export BEACON_TOKEN_FILE="${beacon_token_file}"
+    # The pidfile directory, on every start: /var/run is emptied when the
+    # jail starts.
+    install -d -o "${beacon_user}" -g "${beacon_group}" -m 0755 "$(dirname "${pidfile}")" || return 1
+
+    # The log file must be writable by beacon_user. An existing one gets
+    # the right owner too (an older version of this script created it as
+    # root).
+    if [ ! -e "${beacon_logfile}" ]; then
+        install -o "${beacon_user}" -g "${beacon_group}" -m 0640 /dev/null "${beacon_logfile}" || return 1
+    else
+        chown "${beacon_user}:${beacon_group}" "${beacon_logfile}" || return 1
+        chmod 0640 "${beacon_logfile}" || return 1
+    fi
+
+    # Settings for beacon: first the env file (rc.subr loads it as well),
+    # then the rc.conf values, which win. "set -a" exports every variable
+    # the file sets. su -m keeps exported variables, so they reach beacon.
+    set -a
+    . "${beacon_env_file}"
+    set +a
+    export BEACON_LISTEN="${beacon_listen}"
+    export BEACON_DB="${beacon_db}"
+    export BEACON_TOKEN_FILE="${beacon_token_file}"
 }
 
 run_rc_command "$1"

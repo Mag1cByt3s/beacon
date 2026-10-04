@@ -27,8 +27,10 @@ install -m 0755 -o root -g wheel /tmp/beacon.rc /usr/local/etc/rc.d/beacon
 install -d -m 0755 -o root -g wheel /usr/local/etc/beacon
 ```
 
-The rc.d script creates `/var/db/beacon` (owner `beacon`, mode 0700) on the
-first start.
+On every start, the rc.d script (running as root) creates what the `beacon`
+user needs: `/var/db/beacon` (mode 0700), `/var/run/beacon` for the pidfile
+(emptied when the jail restarts) and `/var/log/beacon.log` (mode 0640). It
+then starts daemon(8) as `beacon` through rc.subr, so nothing runs as root.
 
 ## 3. Settings and secrets (jail)
 
@@ -88,12 +90,13 @@ block in quick proto tcp to 10.0.0.5 port 8080
 ```
 
 Other rc.conf settings (`beacon_user`, `beacon_db`, `beacon_env_file`,
-`beacon_token_file`, `beacon_logfile`) are described at the top of the rc.d
-script. The log is `/var/log/beacon.log`. To rotate it, add
-`/usr/local/etc/newsyslog.conf.d/beacon.conf`:
+`beacon_token_file`, `beacon_logfile`, `beacon_pidfile`) are described at the
+top of the rc.d script. The log is `/var/log/beacon.log`. To rotate it, add
+`/usr/local/etc/newsyslog.conf.d/beacon.conf`. newsyslog recreates the log
+owned by `beacon`, then sends SIGHUP to daemon(8), which reopens it:
 
 ```
-/var/log/beacon.log  600  7  1000  *  JC  /var/run/beacon.pid  1
+/var/log/beacon.log  beacon:beacon  640  7  1000  *  JC  /var/run/beacon/beacon.pid  1
 ```
 
 ## 5. Reverse proxy (Caddy)

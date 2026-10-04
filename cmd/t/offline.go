@@ -11,10 +11,21 @@ import (
 	"github.com/Mag1cByt3s/beacon/internal/queue"
 )
 
-// add captures a task. If the server (or Radicale) cannot be reached, the
-// capture is saved in the offline queue and sent by a later t command.
-// Only captures are ever queued; done and skip are not.
+// add captures a task and says where it went.
 func (a *app) add(ctx context.Context, summary string) error {
+	msg, err := a.capture(ctx, summary)
+	if err != nil {
+		return err
+	}
+	fmt.Fprintln(a.out, msg)
+	return nil
+}
+
+// capture adds a task and returns a short message about it ("Added to
+// Todo."). If the server (or Radicale) cannot be reached, the capture is
+// saved in the offline queue and sent by a later t command. Only captures
+// are ever queued; done and skip are not.
+func (a *app) capture(ctx context.Context, summary string) (string, error) {
 	// The UID is chosen here, once. If the capture is retried later, the
 	// same UID makes sure it cannot be created twice.
 	uid := caldav.NewUID()
@@ -26,21 +37,19 @@ func (a *app) add(ctx context.Context, summary string) error {
 		list, etag, err := a.b.Add(addCtx, uid, summary)
 		if err == nil {
 			a.saveLast(lastCapture{UID: uid, Summary: summary, ETag: etag})
-			fmt.Fprintf(a.out, "Added to %s.\n", list)
-			return nil
+			return fmt.Sprintf("Added to %s.", list), nil
 		}
 		if !unreachable(err) || a.queue == nil {
-			return err
+			return "", err
 		}
 	}
 
 	err := a.queue.Append(queue.Entry{UID: uid, Summary: summary, Queued: time.Now()})
 	if err != nil {
-		return fmt.Errorf("cannot reach the server, and saving the task offline failed too: %w", err)
+		return "", fmt.Errorf("cannot reach the server, and saving the task offline failed too: %w", err)
 	}
 	a.saveLast(lastCapture{UID: uid, Summary: summary, Queued: true})
-	fmt.Fprintln(a.out, "Saved offline, will sync later.")
-	return nil
+	return "Saved offline, will sync later.", nil
 }
 
 // flush sends queued captures, quietly and within flushTimeout. Failures

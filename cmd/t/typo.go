@@ -5,7 +5,7 @@ import "strings"
 // typoCommands are the commands a one-word capture is compared with.
 // "add" and "rm" are left out: they are so short that too many real words
 // ("bad", "arm") are one letter away from them.
-var typoCommands = []string{"list", "focus", "done", "skip", "undo", "help", "hook", "prompt"}
+var typoCommands = []string{"list", "focus", "done", "skip", "undo", "edit", "help", "hook", "prompt"}
 
 // likelyTypo reports whether word is probably a mistyped command, such as
 // "lsit" for "list", and which one. Only lower-case words are checked, so

@@ -43,21 +43,42 @@ func (a *app) rm(ctx context.Context, query string) error {
 	}
 
 	task := matches[0]
-	_, err = a.b.Remove(ctx, task.UID, task.ETag)
+	if err := a.removeTask(ctx, task); err != nil {
+		return err
+	}
+	fmt.Fprintf(a.out, "Removed %q.\n", oneLine(task.Summary))
+	return nil
+}
+
+// removeTask deletes task for good, but only the version that was read,
+// and explains in the error why it did not.
+func (a *app) removeTask(ctx context.Context, task focus.Task) error {
+	_, err := a.b.Remove(ctx, task.UID, task.ETag)
 	switch {
 	case changedElsewhere(err):
-		return fmt.Errorf("%q was changed elsewhere just now, so it was left alone; check it with t list", oneLine(task.Summary))
+		return fmt.Errorf("%q was changed elsewhere just now, so it was left alone", oneLine(task.Summary))
 	case notOpen(err):
 		return fmt.Errorf("%q is no longer an open task", oneLine(task.Summary))
 	case err != nil:
 		return err
 	}
-
 	if last, ok := a.loadLast(); ok && last.UID == task.UID {
 		a.clearLast()
 	}
-	fmt.Fprintf(a.out, "Removed %q.\n", oneLine(task.Summary))
 	return nil
+}
+
+// renameTask gives task a new title, but only the version that was read,
+// and explains in the error why it did not.
+func (a *app) renameTask(ctx context.Context, task focus.Task, summary string) error {
+	_, err := a.b.Rename(ctx, task.UID, task.ETag, summary)
+	switch {
+	case changedElsewhere(err):
+		return fmt.Errorf("%q was changed elsewhere just now, so it was left alone", oneLine(task.Summary))
+	case notOpen(err):
+		return fmt.Errorf("%q is no longer an open task", oneLine(task.Summary))
+	}
+	return err
 }
 
 // undo removes the task added last from this computer: from the offline

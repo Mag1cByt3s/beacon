@@ -9,6 +9,7 @@
 //	t add <words>     add a task that starts with a command word
 //	t rm <words>      remove the task whose title matches, for good
 //	t undo            remove the task added last, for good
+//	t edit            full-screen editor: rename, add and remove tasks
 //	t prompt          the current task or nothing, fast (for the shell hook)
 //	t hook zsh|bash   print the shell hook
 //
@@ -42,6 +43,7 @@ const usage = `usage:
   t add <words...>  add a task that starts with a command word
   t rm <words...>   remove the task whose title matches
   t undo            remove the task you added last
+  t edit            rename, add and remove tasks in a full-screen editor
   t prompt          show the current task quickly, or nothing
   t hook zsh|bash   print a snippet for your shell rc file
 `
@@ -55,7 +57,7 @@ const (
 
 // command is what the user asked for, decided from the arguments alone.
 type command struct {
-	name    string // "list", "focus", "done", "skip", "add", "rm", "undo", "prompt", "hook" or "help"
+	name    string // "list", "focus", "done", "skip", "add", "rm", "undo", "edit", "prompt", "hook" or "help"
 	summary string // title of the new task, only for "add"
 	query   string // words to look for in titles, only for "rm"
 	shell   string // "zsh" or "bash", only for "hook"
@@ -104,6 +106,12 @@ func run(args []string, out io.Writer) error {
 		a.flush()
 	}
 
+	// The editor runs as long as the user likes; each of its changes gets
+	// its own time limit instead.
+	if cmd.name == "edit" {
+		return a.edit()
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel() // defer runs when run returns
 	return a.execute(ctx, cmd)
@@ -130,7 +138,7 @@ func parseArgs(args []string) (command, error) {
 
 	first := args[0]
 	switch first {
-	case "list", "focus", "done", "skip", "undo", "prompt", "help":
+	case "list", "focus", "done", "skip", "undo", "edit", "prompt", "help":
 		if len(args) > 1 {
 			return command{}, fmt.Errorf("%q takes no extra words; to add this as a task, use: t add %s",
 				first, strings.Join(args, " "))

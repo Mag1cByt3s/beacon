@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"strings"
 	"time"
 
 	"github.com/Mag1cByt3s/beacon/internal/api"
@@ -24,6 +25,9 @@ type backend interface {
 	// Remove deletes the open task with this UID for good. With etag set,
 	// only that version is deleted.
 	Remove(ctx context.Context, uid, etag string) (focus.Task, error)
+	// Rename gives the open task with this UID a new title and returns it
+	// as it is now. With etag set, only that version is renamed.
+	Rename(ctx context.Context, uid, etag, summary string) (focus.Task, error)
 }
 
 // newBackend picks the server when BEACON_SERVER_URL is set, else CalDAV.
@@ -133,6 +137,28 @@ func (d direct) Remove(ctx context.Context, uid, etag string) (focus.Task, error
 			return task, caldav.ErrConflict
 		}
 		return task, d.client.Delete(ctx, task)
+	}
+	return focus.Task{}, caldav.ErrGone
+}
+
+func (d direct) Rename(ctx context.Context, uid, etag, summary string) (focus.Task, error) {
+	tasks, err := d.client.OpenTasks(ctx)
+	if err != nil {
+		return focus.Task{}, err
+	}
+	for _, task := range tasks {
+		if task.UID != uid {
+			continue
+		}
+		if etag != "" && etag != task.ETag {
+			return task, caldav.ErrConflict
+		}
+		newETag, err := d.client.Rename(ctx, task, summary)
+		if err != nil {
+			return task, err
+		}
+		task.Summary, task.ETag = strings.Join(strings.Fields(summary), " "), newETag
+		return task, nil
 	}
 	return focus.Task{}, caldav.ErrGone
 }

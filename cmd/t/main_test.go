@@ -80,6 +80,8 @@ func TestParseArgs(t *testing.T) {
 		{name: "unknown option", args: []string{"--version"}, wantErr: true},
 		{name: "undo", args: []string{"undo"}, wantName: "undo"},
 		{name: "undo with extra words", args: []string{"undo", "it"}, wantErr: true},
+		{name: "edit", args: []string{"edit"}, wantName: "edit"},
+		{name: "typo of edit", args: []string{"eidt"}, wantErr: true},
 		{name: "rm", args: []string{"rm", "buy", "coffee"}, wantName: "rm"},
 		{name: "rm without words", args: []string{"rm"}, wantErr: true},
 		{name: "typo of list", args: []string{"lsit"}, wantErr: true},
@@ -121,6 +123,8 @@ type fakeBackend struct {
 	added     []string // UIDs passed to Add
 	removeErr error    // returned by Remove only
 	removed   []string // "uid@etag" passed to Remove
+	renameErr error    // returned by Rename only
+	renamed   []string // "uid@etag=summary" passed to Rename
 }
 
 func (f *fakeBackend) Tasks(ctx context.Context) ([]focus.Task, error) { return f.tasks, f.err }
@@ -149,13 +153,32 @@ func (f *fakeBackend) Done(ctx context.Context) (focus.Task, bool, error) {
 
 func (f *fakeBackend) Skip(ctx context.Context) (focus.Task, bool, error) { return f.Done(ctx) }
 
+func (f *fakeBackend) Rename(ctx context.Context, uid, etag, summary string) (focus.Task, error) {
+	f.renamed = append(f.renamed, uid+"@"+etag+"="+summary)
+	if f.renameErr != nil {
+		return focus.Task{}, f.renameErr
+	}
+	for i, task := range f.tasks {
+		if task.UID == uid {
+			if etag != "" && etag != task.ETag {
+				return task, caldav.ErrConflict
+			}
+			f.tasks[i].Summary = summary
+			f.tasks[i].ETag = etag + "+"
+			return f.tasks[i], nil
+		}
+	}
+	return focus.Task{}, caldav.ErrGone
+}
+
 func (f *fakeBackend) Remove(ctx context.Context, uid, etag string) (focus.Task, error) {
 	f.removed = append(f.removed, uid+"@"+etag)
 	if f.removeErr != nil {
 		return focus.Task{}, f.removeErr
 	}
-	for _, task := range f.tasks {
+	for i, task := range f.tasks {
 		if task.UID == uid {
+			f.tasks = append(f.tasks[:i:i], f.tasks[i+1:]...)
 			return task, f.err
 		}
 	}

@@ -7,6 +7,8 @@
 //	POST /tasks          AddRequest -> 201 AddResponse; 409 if the uid exists
 //	DELETE /tasks/{uid}  DeleteResponse; optional If-Match: "<etag>";
 //	                     404 if no such open task, 409 if it changed
+//	PATCH /tasks/{uid}   RenameRequest -> TaskResponse; optional If-Match;
+//	                     404 if no such open task, 409 if it changed
 //	POST /current/done   DoneResponse, or 409 ErrorResponse if the task changed
 //	POST /current/skip   SkipResponse
 //
@@ -68,6 +70,17 @@ type AddResponse struct {
 	UID  string `json:"uid"`
 	ETag string `json:"etag,omitempty"`
 	List string `json:"list"`
+}
+
+// RenameRequest is the body of PATCH /tasks/{uid}: the task's new title.
+type RenameRequest struct {
+	Summary string `json:"summary"`
+}
+
+// TaskResponse answers PATCH /tasks/{uid} with the task as it is now,
+// including its new ETag.
+type TaskResponse struct {
+	Task *Task `json:"task"`
 }
 
 // DeleteResponse answers DELETE /tasks/{uid} with the removed task.

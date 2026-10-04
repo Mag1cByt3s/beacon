@@ -103,21 +103,41 @@ func (c *Client) Add(ctx context.Context, uid, summary string) (list, etag strin
 	return resp.List, resp.ETag, nil
 }
 
+// Rename gives the open task with this UID a new title and returns the
+// task as it is now (with its new ETag). With etag set, only that version
+// is renamed: if the task changed since, it returns a *ConflictError. If
+// there is no such open task, ErrNotFound.
+func (c *Client) Rename(ctx context.Context, uid, etag, summary string) (focus.Task, error) {
+	var resp TaskResponse
+	err := c.do(ctx, http.MethodPatch, "tasks/"+url.PathEscape(uid), ifMatch(etag), RenameRequest{Summary: summary}, &resp)
+	if err != nil {
+		return focus.Task{}, err
+	}
+	if resp.Task == nil {
+		return focus.Task{}, errors.New("the beacon server sent an unexpected answer")
+	}
+	return resp.Task.Focus(), nil
+}
+
+// ifMatch returns an If-Match header for etag, or nil for no condition.
+// ETags travel without quotes; the header needs them, unless the ETag is
+// already quoted or weak (W/"...").
+func ifMatch(etag string) http.Header {
+	if etag == "" {
+		return nil
+	}
+	if !strings.HasPrefix(etag, `"`) && !strings.HasPrefix(etag, `W/"`) {
+		etag = `"` + etag + `"`
+	}
+	return http.Header{"If-Match": {etag}}
+}
+
 // Remove deletes the open task with this UID for good and returns it. With
 // etag set, only that version is deleted: if the task changed since, it
 // returns a *ConflictError. If there is no such open task, ErrNotFound.
 func (c *Client) Remove(ctx context.Context, uid, etag string) (focus.Task, error) {
-	header := http.Header{}
-	if etag != "" {
-		// ETags travel without quotes; the header needs them, unless the
-		// ETag is already quoted or weak (W/"...").
-		if !strings.HasPrefix(etag, `"`) && !strings.HasPrefix(etag, `W/"`) {
-			etag = `"` + etag + `"`
-		}
-		header.Set("If-Match", etag)
-	}
 	var resp DeleteResponse
-	err := c.do(ctx, http.MethodDelete, "tasks/"+url.PathEscape(uid), header, nil, &resp)
+	err := c.do(ctx, http.MethodDelete, "tasks/"+url.PathEscape(uid), ifMatch(etag), nil, &resp)
 	if err != nil {
 		return focus.Task{}, err
 	}
@@ -203,8 +223,8 @@ func (c *Client) do(ctx context.Context, method, path string, header http.Header
 		msg = resp.Status
 	}
 
-	// Only a DELETE names one task; any other 404 is a server problem.
-	if resp.StatusCode == http.StatusNotFound && method == http.MethodDelete {
+	// Only DELETE and PATCH name one task; any other 404 is a server problem.
+	if resp.StatusCode == http.StatusNotFound && (method == http.MethodDelete || method == http.MethodPatch) {
 		return ErrNotFound
 	}
 

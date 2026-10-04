@@ -126,6 +126,35 @@ func TestClientRemove(t *testing.T) {
 	}
 }
 
+func TestClientRename(t *testing.T) {
+	srv, backend := newServer(t)
+	c := newClient(t, srv.URL, testToken)
+	ctx := context.Background()
+
+	tasks, err := c.Tasks(ctx)
+	if err != nil || len(tasks) == 0 || tasks[0].ETag == "" {
+		t.Fatalf("Tasks = %+v, %v; want tasks with etags", tasks, err)
+	}
+	milk := tasks[0]
+
+	renamed, err := c.Rename(ctx, milk.UID, milk.ETag, "Oat milk")
+	if err != nil || renamed.Summary != "Oat milk" || renamed.ETag == milk.ETag {
+		t.Fatalf("Rename = %+v, %v; want the new title and a new etag", renamed, err)
+	}
+
+	// The old version is gone, so renaming it again is a conflict.
+	var conflict *api.ConflictError
+	if _, err := c.Rename(ctx, milk.UID, milk.ETag, "x"); !errors.As(err, &conflict) {
+		t.Errorf("stale etag: err = %v, want a *ConflictError", err)
+	}
+	if _, err := c.Rename(ctx, "nope", "", "x"); !errors.Is(err, api.ErrNotFound) {
+		t.Errorf("unknown uid: err = %v, want ErrNotFound", err)
+	}
+	if s, _ := backend.Todo(caldavtest.GroceriesPath + "1.ics").Props.Text("SUMMARY"); s != "Oat milk" {
+		t.Errorf("CalDAV title = %q", s)
+	}
+}
+
 func TestClientWrongToken(t *testing.T) {
 	srv, _ := newServer(t)
 	c := newClient(t, srv.URL, "wrong-token-0123456789")

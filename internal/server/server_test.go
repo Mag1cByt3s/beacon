@@ -158,6 +158,7 @@ func TestAuth(t *testing.T) {
 		{"POST", "/current/done", ""},
 		{"POST", "/current/skip", ""},
 		{"DELETE", "/tasks/milk", ""},
+		{"PATCH", "/tasks/milk", `{"summary":"x"}`},
 		{"GET", "/unknown", ""},
 	}
 	for _, a := range auths {
@@ -514,6 +515,57 @@ func TestDeleteRefusesRecurring(t *testing.T) {
 	}
 	if _, ok := e.caldav.Find(caldavtest.TodoPath + "weekly.ics"); !ok {
 		t.Error("a recurring task was deleted")
+	}
+}
+
+func TestRenameTask(t *testing.T) {
+	e := newEnv(t)
+	if got := e.current(); got != "milk" {
+		t.Fatalf("current = %q, want milk", got)
+	}
+
+	var resp api.TaskResponse
+	if got := e.do("PATCH", "/tasks/milk", `{"summary":"  Oat   milk "}`, &resp); got != http.StatusOK {
+		t.Fatalf("status %d, want 200", got)
+	}
+	if resp.Task == nil || resp.Task.Summary != "Oat milk" || resp.Task.ETag == "" {
+		t.Fatalf("answer = %+v, want the renamed task with its new etag", resp.Task)
+	}
+	stored, _ := e.caldav.Find(caldavtest.GroceriesPath + "1.ics")
+	if s, _ := e.caldav.Todo(caldavtest.GroceriesPath + "1.ics").Props.Text(ical.PropSummary); s != "Oat milk" || stored.ETag != resp.Task.ETag {
+		t.Errorf("CalDAV has %q (etag %q), want Oat milk (etag %q)", s, stored.ETag, resp.Task.ETag)
+	}
+
+	// Renaming the current task must not make "done" report a conflict.
+	var done api.DoneResponse
+	if got := e.do("POST", "/current/done", "", &done); got != http.StatusOK || uidOf(done.Done) != "milk" {
+		t.Errorf("done after rename: status %d, done %v; want 200, milk", got, done.Done)
+	}
+}
+
+func TestRenameTaskRefusals(t *testing.T) {
+	e := newEnv(t)
+	if got := e.do("PATCH", "/tasks/nope", `{"summary":"x"}`, nil); got != http.StatusNotFound {
+		t.Errorf("unknown uid: status %d, want 404", got)
+	}
+	if got := e.do("PATCH", "/tasks/milk", `{"summary":"   "}`, nil); got != http.StatusBadRequest {
+		t.Errorf("empty title: status %d, want 400", got)
+	}
+
+	// A stale If-Match is refused and the phone's edit stays.
+	r, _ := http.NewRequest("PATCH", e.url+"/tasks/milk", strings.NewReader(`{"summary":"x"}`))
+	r.Header.Set("Authorization", "Bearer "+testToken)
+	r.Header.Set("If-Match", `"not-the-current-version"`)
+	resp, err := http.DefaultClient.Do(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusConflict {
+		t.Errorf("stale If-Match: status %d, want 409", resp.StatusCode)
+	}
+	if s, _ := e.caldav.Todo(caldavtest.GroceriesPath + "1.ics").Props.Text(ical.PropSummary); s != "Milk" {
+		t.Errorf("title = %q, want it unchanged", s)
 	}
 }
 

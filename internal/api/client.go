@@ -19,7 +19,8 @@ var ErrUnauthorized = errors.New("the beacon server rejected the token; check BE
 
 // ErrUnreachable is matched (with errors.Is) by errors that mean the task
 // could not get through and trying again later may work: the beacon server
-// is down or slow, or it cannot reach the CalDAV server (503).
+// is down or slow (also when a reverse proxy in front of it says so with
+// 502 or 504), or it cannot reach the CalDAV server (503).
 var ErrUnreachable = errors.New("unreachable")
 
 // ErrExists means a task with this UID already exists, so an earlier
@@ -233,6 +234,15 @@ func (c *Client) do(ctx context.Context, method, path string, header http.Header
 		return ErrUnauthorized
 	case http.StatusServiceUnavailable:
 		return unreachableError{"beacon server: " + msg}
+	case http.StatusBadGateway, http.StatusGatewayTimeout:
+		// beacon itself answers 502 with its own error message when the
+		// CalDAV server rejects a request (say a wrong password); that is
+		// not fixed by trying later. Without that message, the 502 or 504
+		// comes from a reverse proxy that cannot reach beacon.
+		if errResp.Error != "" {
+			return fmt.Errorf("beacon server: %s", msg)
+		}
+		return unreachableError{fmt.Sprintf("the beacon server at %s is not answering (%s from the proxy)", c.base.Host, resp.Status)}
 	case http.StatusConflict:
 		conflict := &ConflictError{Message: msg}
 		if errResp.Current != nil {

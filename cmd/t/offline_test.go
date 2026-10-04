@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"net/http"
 	"net/http/httptest"
 	"path/filepath"
 	"slices"
@@ -89,6 +90,26 @@ func unreachableCalDAV(t *testing.T) error {
 		t.Fatalf("setup: %v", err)
 	}
 	return err
+}
+
+func TestAddOfflineWhenProxyReportsBeaconDown(t *testing.T) {
+	for _, status := range []int{http.StatusBadGateway, http.StatusGatewayTimeout} {
+		proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(status) // what Caddy answers when beacon is down
+		}))
+		c, _ := api.NewClient(proxy.URL, "token")
+		var out strings.Builder
+		q := tempQueue(t)
+		a := &app{b: c, out: &out, queue: q}
+
+		if err := a.execute(context.Background(), command{name: "add", summary: "buy coffee"}); err != nil {
+			t.Errorf("%d: err = %v, want nil", status, err)
+		}
+		if out.String() != "Saved offline, will sync later.\n" || len(queued(t, q)) != 1 {
+			t.Errorf("%d: output %q, %d queued; want the capture saved offline", status, out.String(), len(queued(t, q)))
+		}
+		proxy.Close()
+	}
 }
 
 func TestAddOtherErrorsAreNotQueued(t *testing.T) {

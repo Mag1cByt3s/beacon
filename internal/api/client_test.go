@@ -225,6 +225,39 @@ func TestClientServerError(t *testing.T) {
 	}
 }
 
+func TestClientProxyErrors(t *testing.T) {
+	tests := []struct {
+		name            string
+		status          int
+		body            string
+		wantUnreachable bool
+	}{
+		{"proxy 502, beacon down", http.StatusBadGateway, "", true},
+		{"proxy 504, beacon too slow", http.StatusGatewayTimeout, "", true},
+		{"proxy 502 with an HTML page", http.StatusBadGateway, "<html>Bad Gateway</html>", true},
+		{"beacon's own 502 (CalDAV login failed)", http.StatusBadGateway, `{"error":"CalDAV login failed"}`, false},
+		{"503", http.StatusServiceUnavailable, `{"error":"cannot reach CalDAV server"}`, true},
+		{"500", http.StatusInternalServerError, `{"error":"internal server error"}`, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(tt.status)
+				w.Write([]byte(tt.body))
+			}))
+			defer srv.Close()
+
+			_, _, err := newClient(t, srv.URL, testToken).Add(context.Background(), caldav.NewUID(), "x")
+			if err == nil {
+				t.Fatal("Add succeeded")
+			}
+			if got := errors.Is(err, api.ErrUnreachable); got != tt.wantUnreachable {
+				t.Errorf("err = %v; unreachable = %v, want %v", err, got, tt.wantUnreachable)
+			}
+		})
+	}
+}
+
 func TestNewClientBadURL(t *testing.T) {
 	for _, u := range []string{"", "beacon.example.org", "://x"} {
 		if _, err := api.NewClient(u, testToken); err == nil {

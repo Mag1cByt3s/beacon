@@ -93,11 +93,14 @@ block in quick proto tcp to 10.0.0.5 port 8080
 Other rc.conf settings (`beacon_user`, `beacon_db`, `beacon_env_file`,
 `beacon_token_file`, `beacon_logfile`, `beacon_pidfile`) are described at the
 top of the rc.d script. The log is `/var/log/beacon.log`. To rotate it, add
-`/usr/local/etc/newsyslog.conf.d/beacon.conf`. newsyslog recreates the log
-owned by `beacon`, then sends SIGHUP to daemon(8), which reopens it:
+`/usr/local/etc/newsyslog.conf.d/beacon.conf` (a fresh jail may not have
+that folder yet). newsyslog recreates the log owned by `beacon`, then sends
+SIGHUP to daemon(8), which reopens it:
 
-```
-/var/log/beacon.log  beacon:beacon  640  7  1000  *  JC  /var/run/beacon/beacon.pid  1
+```sh
+mkdir -p /usr/local/etc/newsyslog.conf.d
+echo '/var/log/beacon.log  beacon:beacon  640  7  1000  *  JC  /var/run/beacon/beacon.pid  1' \
+  > /usr/local/etc/newsyslog.conf.d/beacon.conf
 ```
 
 ## 5. Reverse proxy (Caddy)

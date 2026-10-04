@@ -44,6 +44,7 @@ BEACON_CALDAV_USER=pascal
 BEACON_CALDAV_PASSWORD_CMD="cat /usr/local/etc/beacon/radicale.pass"
 BEACON_LISTS=Todo
 BEACON_DEFAULT_LIST=Todo
+BEACON_TRUSTED_PROXIES=10.0.0.4
 EOF
 chmod 0644 /usr/local/etc/beacon/beacon.env
 ```
@@ -82,10 +83,10 @@ service beacon start
 `beacon_listen` defaults to `127.0.0.1:8080`, which only works if Caddy runs
 in the same jail. If Caddy runs in a different jail, beacon must listen on
 this jail's IP. Then allow only the proxy to reach it, for example with pf
-on the host (proxy at `10.0.0.2`):
+on the host (proxy at `10.0.0.4`):
 
 ```
-pass in quick proto tcp from 10.0.0.2 to 10.0.0.5 port 8080
+pass in quick proto tcp from 10.0.0.4 to 10.0.0.5 port 8080
 block in quick proto tcp to 10.0.0.5 port 8080
 ```
 
@@ -113,6 +114,11 @@ beacon.example.org {
 Caddy gets the TLS certificate itself, passes the `Authorization` header
 through unchanged and does not cache. Its access logs, if enabled, hide the
 `Authorization` header.
+
+Caddy also adds the client's address in `X-Forwarded-For`. beacon only
+believes that header from the addresses in `BEACON_TRUSTED_PROXIES` (here
+Caddy's jail, `10.0.0.4`; a CIDR range like `10.0.0.0/24` works too) and
+then logs the real client as `remote`; from anyone else it is ignored.
 
 ## 6. Verify
 

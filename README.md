@@ -20,7 +20,13 @@ The server additionally uses:
 export BEACON_TOKEN_FILE=/usr/local/etc/beacon/token   # required (or BEACON_TOKEN)
 export BEACON_LISTEN=127.0.0.1:8080                    # default
 export BEACON_DB=/var/db/beacon/beacon.db              # focus state, default ./beacon.db
+export BEACON_TRUSTED_PROXIES=10.0.0.4                 # reverse proxies, see below
 ```
+
+Behind a reverse proxy, `BEACON_TRUSTED_PROXIES` (comma-separated IPs or CIDR
+ranges, empty by default) lists the proxies whose `X-Forwarded-For` header
+beacon believes, so the log shows the real client address. The header is
+ignored from everyone else.
 
 The token is at least 16 characters, for example from `openssl rand -hex 32`.
 `BEACON_TOKEN_FILE` names a file holding it and takes precedence over

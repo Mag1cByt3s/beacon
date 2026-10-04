@@ -97,33 +97,57 @@ func (c *Client) Delete(ctx context.Context, task focus.Task) error {
 // unknown X- ones, is written back as it was. If the task changed on the
 // server since it was read, nothing is written and ErrConflict is returned.
 func (c *Client) Complete(ctx context.Context, task focus.Task) error {
+	_, err := c.change(ctx, task, "complete", func(cal *ical.Calendar) error {
+		return markCompleted(cal, time.Now())
+	})
+	return err
+}
+
+// Rename changes the title of task to summary and returns the task's new
+// ETag. Like Complete, it changes nothing else (only LAST-MODIFIED and
+// DTSTAMP are updated) and refuses with ErrConflict if the task changed on
+// the server since it was read.
+func (c *Client) Rename(ctx context.Context, task focus.Task, summary string) (string, error) {
+	summary = strings.Join(strings.Fields(summary), " ")
+	if summary == "" {
+		return "", errors.New("the new title is empty")
+	}
+	return c.change(ctx, task, "rename", func(cal *ical.Calendar) error {
+		return renameTodo(cal, summary, time.Now())
+	})
+}
+
+// change fetches the current version of task, applies edit to it and
+// writes it back. It refuses with ErrConflict if the task changed since
+// it was read, and returns the new ETag. verb names the action in errors.
+func (c *Client) change(ctx context.Context, task focus.Task, verb string, edit func(*ical.Calendar) error) (string, error) {
 	if task.Recurring {
-		return ErrRecurring
+		return "", ErrRecurring
 	}
 	if task.Path == "" || task.ETag == "" {
-		return errors.New("cannot complete a task that was not read from the server")
+		return "", fmt.Errorf("cannot %s a task that was not read from the server", verb)
 	}
 
 	// Fetch the full, current version of the task.
 	obj, err := c.dav.GetCalendarObject(ctx, task.Path)
 	if err != nil {
-		return friendlyError(fmt.Errorf("cannot read the task: %w", err))
+		return "", friendlyError(fmt.Errorf("cannot read the task: %w", err))
 	}
 	if obj.ETag != task.ETag {
-		return ErrConflict
+		return "", ErrConflict
 	}
 
-	if err := markCompleted(obj.Data, time.Now()); err != nil {
-		return err
+	if err := edit(obj.Data); err != nil {
+		return "", err
 	}
 
 	// "If-Match" makes the server refuse the write if the task changed
 	// between our read and this write.
-	_, err = c.put(ctx, task.Path, obj.Data, "If-Match", quoteETag(task.ETag))
+	etag, err := c.put(ctx, task.Path, obj.Data, "If-Match", quoteETag(task.ETag))
 	if err != nil {
-		return friendlyError(fmt.Errorf("cannot complete the task: %w", err))
+		return "", friendlyError(fmt.Errorf("cannot %s the task: %w", verb, err))
 	}
-	return nil
+	return etag, nil
 }
 
 // newTodo builds a calendar object holding one new VTODO with only the
@@ -149,27 +173,12 @@ func newTodo(uid, summary string, now time.Time) *ical.Calendar {
 // markCompleted sets the completion fields on the VTODO in cal and leaves
 // everything else untouched. It refuses recurring tasks.
 func markCompleted(cal *ical.Calendar, now time.Time) error {
+	todo, err := soleTodo(cal)
+	if err != nil {
+		return err
+	}
 	now = now.UTC()
-
-	var todos []*ical.Component
-	for _, comp := range cal.Children {
-		if comp.Name == ical.CompToDo {
-			todos = append(todos, comp)
-		}
-	}
-	if len(todos) == 0 {
-		return errors.New("the task is no longer a to-do on the server")
-	}
-	// More than one VTODO means a recurring task with overrides.
-	if len(todos) > 1 {
-		return ErrRecurring
-	}
-
-	props := todos[0].Props
-	if props.Get(ical.PropRecurrenceRule) != nil || props.Get(ical.PropRecurrenceID) != nil {
-		return ErrRecurring
-	}
-
+	props := todo.Props
 	props.SetText(ical.PropStatus, "COMPLETED")
 	props.SetDateTime(ical.PropCompleted, now)
 	percent := ical.NewProp(ical.PropPercentComplete)
@@ -179,6 +188,43 @@ func markCompleted(cal *ical.Calendar, now time.Time) error {
 	props.SetDateTime(ical.PropLastModified, now)
 	props.SetDateTime(ical.PropDateTimeStamp, now)
 	return nil
+}
+
+// renameTodo sets the title of the VTODO in cal and leaves everything else
+// untouched. It refuses recurring tasks.
+func renameTodo(cal *ical.Calendar, summary string, now time.Time) error {
+	todo, err := soleTodo(cal)
+	if err != nil {
+		return err
+	}
+	now = now.UTC()
+	todo.Props.SetText(ical.PropSummary, summary)
+	todo.Props.SetDateTime(ical.PropLastModified, now)
+	todo.Props.SetDateTime(ical.PropDateTimeStamp, now)
+	return nil
+}
+
+// soleTodo returns the one VTODO in cal. A recurring task (an RRULE, or
+// several VTODOs for its occurrences) gives ErrRecurring.
+func soleTodo(cal *ical.Calendar) (*ical.Component, error) {
+	var todos []*ical.Component
+	for _, comp := range cal.Children {
+		if comp.Name == ical.CompToDo {
+			todos = append(todos, comp)
+		}
+	}
+	if len(todos) == 0 {
+		return nil, errors.New("the task is no longer a to-do on the server")
+	}
+	// More than one VTODO means a recurring task with overrides.
+	if len(todos) > 1 {
+		return nil, ErrRecurring
+	}
+	props := todos[0].Props
+	if props.Get(ical.PropRecurrenceRule) != nil || props.Get(ical.PropRecurrenceID) != nil {
+		return nil, ErrRecurring
+	}
+	return todos[0], nil
 }
 
 // put uploads cal to objectPath with one conditional header (If-Match or

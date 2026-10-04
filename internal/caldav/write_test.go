@@ -379,3 +379,85 @@ func assertUntouched(t *testing.T, b *caldavtest.Backend, path, wantSummary stri
 		t.Error("the task was completed despite the conflict")
 	}
 }
+
+func TestRename(t *testing.T) {
+	c, backend := newTestClient(t)
+	path := caldavtest.TodoPath + "rich.ics"
+	backend.Add(t, path,
+		"BEGIN:VTODO",
+		"UID:rich",
+		"DTSTAMP:20261001T100000Z",
+		"CREATED:20260901T100000Z",
+		"LAST-MODIFIED:20261001T100000Z",
+		"SUMMARY:Call the bnak",
+		"DESCRIPTION:About the card",
+		"DUE;VALUE=DATE:20261010",
+		"PRIORITY:5",
+		"STATUS:NEEDS-ACTION",
+		"X-APPLE-SORT-ORDER:123456",
+		"X-CUSTOM;X-PARAM=keep:me",
+		"BEGIN:VALARM",
+		"ACTION:DISPLAY",
+		"DESCRIPTION:Reminder",
+		"TRIGGER;VALUE=DATE-TIME:20261010T080000Z",
+		"END:VALARM",
+		"END:VTODO",
+	)
+	before := ical.Props{}
+	for name, values := range backend.Todo(path).Props {
+		before[name] = slices.Clone(values)
+	}
+
+	task := openTask(t, c, "rich")
+	etag, err := c.Rename(context.Background(), task, "  Call the   bank ")
+	if err != nil {
+		t.Fatalf("Rename: %v", err)
+	}
+	if obj, _ := backend.Find(path); etag == "" || etag != obj.ETag {
+		t.Errorf("ETag = %q, want the new stored version %q", etag, obj.ETag)
+	}
+
+	todo := backend.Todo(path)
+	if got := text(todo.Props, ical.PropSummary); got != "Call the bank" {
+		t.Errorf("SUMMARY = %q, want %q", got, "Call the bank")
+	}
+	changed := []string{ical.PropSummary, ical.PropLastModified, ical.PropDateTimeStamp}
+	for name, values := range before {
+		if !slices.Contains(changed, name) && !reflect.DeepEqual(todo.Props[name], values) {
+			t.Errorf("%s changed: %v -> %v", name, values, todo.Props[name])
+		}
+	}
+	for name := range todo.Props {
+		if _, existed := before[name]; !existed {
+			t.Errorf("unexpected new property %s", name)
+		}
+	}
+	if len(todo.Children) != 1 || todo.Children[0].Name != ical.CompAlarm {
+		t.Errorf("VALARM was lost: %v", todo.Children)
+	}
+}
+
+func TestRenameRefusals(t *testing.T) {
+	c, backend := newTestClient(t)
+	ctx := context.Background()
+
+	if _, err := c.Rename(ctx, openTask(t, c, "open"), "   "); err == nil {
+		t.Error("an empty title was accepted")
+	}
+
+	task := openTask(t, c, "open")
+	backend.Edit(t, caldavtest.TodoPath+"1.ics", "edited on the phone")
+	if _, err := c.Rename(ctx, task, "new title"); !errors.Is(err, ErrConflict) {
+		t.Errorf("changed elsewhere: err = %v, want ErrConflict", err)
+	}
+	if got := text(backend.Todo(caldavtest.TodoPath+"1.ics").Props, ical.PropSummary); got != "edited on the phone" {
+		t.Errorf("the phone's edit was overwritten: %q", got)
+	}
+
+	backend.Add(t, caldavtest.TodoPath+"weekly.ics",
+		"BEGIN:VTODO", "UID:weekly", "DTSTAMP:20261001T100000Z", "SUMMARY:Water plants",
+		"RRULE:FREQ=WEEKLY", "END:VTODO")
+	if _, err := c.Rename(ctx, openTask(t, c, "weekly"), "x"); !errors.Is(err, ErrRecurring) {
+		t.Errorf("recurring: err = %v, want ErrRecurring", err)
+	}
+}

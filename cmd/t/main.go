@@ -65,7 +65,8 @@ journal (needs the beacon server):
                             start a focus timer; without a label, for the current task
   t timer stop [words]      stop it and note what was done (asks in a terminal)
   t timer toggle            stop the running timer or start one
-  t timer status            show the running timer and today's total
+  t timer status [--label]  show the running timer and today's total
+                            (--label: only its label); exit code 1 if none runs
   t hook zsh-journal        print a zsh snippet that sets BEACON_JOURNAL_OPEN
 `
 

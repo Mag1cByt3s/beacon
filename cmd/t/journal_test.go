@@ -60,6 +60,7 @@ func TestParseTimerArgs(t *testing.T) {
 		{[]string{"stop", "Writeup fertig"}, timerCmd{action: "stop", text: "Writeup fertig", kind: "computer"}, false},
 		{[]string{"toggle"}, timerCmd{action: "toggle", kind: "computer"}, false},
 		{[]string{"status"}, timerCmd{action: "status", kind: "computer"}, false},
+		{[]string{"status", "--label"}, timerCmd{action: "status", kind: "computer", label: true}, false},
 		{[]string{"status", "x"}, timerCmd{}, true},
 		{[]string{"stop", "--offline"}, timerCmd{}, true},
 		{[]string{"pause"}, timerCmd{}, true},
@@ -452,6 +453,10 @@ func TestTimer(t *testing.T) {
 	if err := e.app.runTimer(timerCmd{action: "status"}); err != nil {
 		t.Errorf("status while running: err = %v, want exit code 0", err)
 	}
+	e.out.Reset()
+	if err := e.app.runTimer(timerCmd{action: "status", label: true}); err != nil || e.out.String() != "HTB box\n" {
+		t.Errorf("status --label: %q, %v; want the label", e.out, err)
+	}
 
 	// Enter takes the label as what was done.
 	e.input("")
@@ -463,6 +468,9 @@ func TestTimer(t *testing.T) {
 	}
 	if code := exitCodeOf(e.app.runTimer(timerCmd{action: "status"})); code != 1 {
 		t.Errorf("status when stopped: exit code %d, want 1", code)
+	}
+	if code := exitCodeOf(e.app.runTimer(timerCmd{action: "status", label: true})); code != 1 {
+		t.Errorf("status --label when stopped: exit code %d, want 1", code)
 	}
 	if err := e.app.runTimer(timerCmd{action: "stop"}); err == nil {
 		t.Error("stop without a running timer succeeded")

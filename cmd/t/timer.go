@@ -19,9 +19,10 @@ type timerCmd struct {
 	action string // "start", "stop", "toggle" or "status"
 	text   string // start: the label; stop and toggle: what was done
 	kind   string // start: computer or offline
+	label  bool   // status: print only the running timer's label, for scripts
 }
 
-const timerUsage = "usage: t timer start [label] [--offline] | stop [what was done] | toggle | status"
+const timerUsage = "usage: t timer start [label] [--offline] | stop [what was done] | toggle | status [--label]"
 
 func parseTimerArgs(args []string) (timerCmd, error) {
 	if len(args) == 0 {
@@ -40,7 +41,10 @@ func parseTimerArgs(args []string) (timerCmd, error) {
 			return timerCmd{}, errors.New("--offline is for starting: t timer start [label] --offline")
 		}
 	case "status":
-		if len(args) > 1 {
+		switch {
+		case len(args) == 2 && args[1] == "--label":
+			tc.label, tc.text = true, ""
+		case len(args) > 1:
 			return timerCmd{}, errors.New(timerUsage)
 		}
 	default:
@@ -128,7 +132,7 @@ func (a *app) runTimer(tc timerCmd) error {
 
 	switch tc.action {
 	case "status":
-		return a.timerStatus(status)
+		return a.timerStatus(status, tc.label)
 	case "start":
 		if status.Running != nil {
 			return fmt.Errorf("a timer is already running (%s); stop it first: t timer stop", sessionLine(*status.Running, a.now()))
@@ -199,10 +203,17 @@ func (a *app) timerStop(c *api.Client, tc timerCmd, running journal.Session) err
 	return nil
 }
 
-// timerStatus prints the running timer and today's total. Like t journal
-// status, the exit code tells scripts the answer: 0 if a timer runs,
-// 1 if not.
-func (a *app) timerStatus(status api.FocusStatus) error {
+// timerStatus prints the running timer and today's total, or with
+// labelOnly just the running timer's label. Like t journal status, the
+// exit code tells scripts the answer: 0 if a timer runs, 1 if not.
+func (a *app) timerStatus(status api.FocusStatus, labelOnly bool) error {
+	if labelOnly {
+		if status.Running == nil {
+			return exitCode{code: 1}
+		}
+		fmt.Fprintln(a.out, oneLine(status.Running.Label))
+		return nil
+	}
 	now := a.now()
 	total := status.Minutes
 	if status.Running != nil {

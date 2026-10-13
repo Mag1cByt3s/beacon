@@ -55,6 +55,10 @@ type Server struct {
 	// mu makes requests that read and change the focus state run one at a
 	// time, so two clients cannot both pick or complete a task at once.
 	mu sync.Mutex
+
+	// journalMu makes changes to the journal run one at a time, so two
+	// clients changing the same day cannot overwrite each other's fields.
+	journalMu sync.Mutex
 }
 
 // New creates a server. token is the bearer token clients must send; new
@@ -120,10 +124,22 @@ func (s *Server) Handler() http.Handler {
 		"PATCH /tasks/{uid}":  s.renameTask,
 		"POST /current/done":  s.done,
 		"POST /current/skip":  s.skip,
+
+		// The journal. "today" works wherever a {date} is expected.
+		"GET /api/journal":                  s.listJournal,
+		"GET /api/journal/export.csv":       s.exportJournal,
+		"GET /api/journal/items/export.csv": s.exportItems,
+		"GET /api/journal/{date}":           s.getJournal,
+		"PATCH /api/journal/{date}":         s.patchJournal,
+		"GET /api/journal/{date}/items":     s.getItems,
+		"POST /api/journal/{date}/items":    s.addItem,
+		"PUT /api/journal/{date}/items":     s.replaceItems,
 	}
 	for pattern, handler := range routes {
 		mux.Handle(pattern, s.requireClient(everyClientButSync, handler))
 	}
+	// ActivityWatch data comes only from the aw-sync client.
+	mux.Handle("PUT /api/journal/{date}/aw", s.requireClient(onlySync, http.HandlerFunc(s.putAW)))
 
 	// Anything else is not part of the API: 404, without asking for a
 	// token, so scanners looking for /wp-login.php don't fill the log with

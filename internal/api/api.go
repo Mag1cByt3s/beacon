@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/Mag1cByt3s/beacon/internal/focus"
+	"github.com/Mag1cByt3s/beacon/internal/journal"
 )
 
 // Task is a task as the API sends it. Fields beacon does not need are left
@@ -168,4 +169,44 @@ func TaskPtr(t focus.Task, ok bool) *Task {
 	}
 	out := FromFocus(t)
 	return &out
+}
+
+// ---- Journal ----
+//
+//	GET   /api/journal/{date}              JournalResponse ("today" works as date)
+//	PATCH /api/journal/{date}              partial journal.Entry -> JournalResponse
+//	GET   /api/journal?from=&to=           JournalListResponse
+//	GET   /api/journal/export.csv          CSV of the entries (from=, to=)
+//	GET   /api/journal/items/export.csv    CSV of the items (from=, to=)
+//	GET   /api/journal/{date}/items        ItemsResponse
+//	POST  /api/journal/{date}/items        journal.Item -> 201 journal.Item
+//	PUT   /api/journal/{date}/items        ItemsResponse -> ItemsResponse (replaces the list)
+//	PUT   /api/journal/{date}/aw           AWRequest -> JournalResponse (client aw-sync only)
+//	GET   /api/journal/{date}/suggestion   Suggestion
+
+// JournalResponse is one journal day and the parts of it still missing
+// ("morning", "evening").
+type JournalResponse struct {
+	Entry   journal.Entry `json:"entry"`
+	Missing []string      `json:"missing"`
+}
+
+// JournalListResponse is the journal days of a range, oldest first. Days
+// without any entry are left out.
+type JournalListResponse struct {
+	From    string            `json:"from"`
+	To      string            `json:"to"`
+	Entries []JournalResponse `json:"entries"`
+}
+
+// ItemsResponse is the list of things done on a day.
+type ItemsResponse struct {
+	Items []journal.Item `json:"items"`
+}
+
+// AWRequest is the body of PUT /api/journal/{date}/aw: productive
+// computer time as measured by ActivityWatch.
+type AWRequest struct {
+	Minutes int              `json:"minutes"`
+	Windows []journal.Window `json:"windows"`
 }

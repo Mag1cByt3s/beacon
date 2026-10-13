@@ -29,6 +29,7 @@ const (
 // env is one running beacon server on top of a fake CalDAV server.
 type env struct {
 	t       *testing.T
+	srv     *Server // the server under test, e.g. to set its clock
 	url     string
 	caldav  *caldavtest.Backend
 	logs    *bytes.Buffer
@@ -67,7 +68,7 @@ func newEnvWithProxies(t *testing.T, proxies []netip.Prefix) *env {
 	srv := httptest.NewServer(server.Handler())
 	t.Cleanup(srv.Close)
 
-	return &env{t: t, url: srv.URL, caldav: backend, logs: logs, dbPath: dbPath, davStop: davSrv.Close}
+	return &env{t: t, srv: server, url: srv.URL, caldav: backend, logs: logs, dbPath: dbPath, davStop: davSrv.Close}
 }
 
 // do sends a request with the test token and decodes the JSON answer into

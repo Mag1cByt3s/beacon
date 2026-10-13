@@ -1,6 +1,7 @@
-// Package store keeps beacon's focus state in SQLite: which task is
-// current and which tasks were skipped. Tasks are referred to by their
-// VTODO UID only; task data itself always stays in CalDAV.
+// Package store keeps beacon's own data in SQLite: the focus state (which
+// task is current, which were skipped) and the journal (see package
+// journal). Tasks are referred to by their VTODO UID only; task data
+// itself always stays in CalDAV.
 package store
 
 import (
@@ -14,19 +15,101 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-const schema = `
-CREATE TABLE IF NOT EXISTS current (
-	id   INTEGER PRIMARY KEY CHECK (id = 1), -- at most one row
-	uid  TEXT NOT NULL,
-	etag TEXT NOT NULL                       -- version when it became current
-);
-CREATE TABLE IF NOT EXISTS skips (
-	uid TEXT PRIMARY KEY,
-	seq INTEGER NOT NULL                     -- higher = skipped more recently
-);
-`
+// migrations lists the schema changes in order: migrations[i] brings the
+// database from version i to version i+1. The version is kept in SQLite's
+// user_version. Never change a step that has been released; add a new one.
+var migrations = []string{
+	// 1: the focus state. Databases from before versioning already have
+	// these tables, hence IF NOT EXISTS.
+	`
+	CREATE TABLE IF NOT EXISTS current (
+		id   INTEGER PRIMARY KEY CHECK (id = 1), -- at most one row
+		uid  TEXT NOT NULL,
+		etag TEXT NOT NULL                       -- version when it became current
+	);
+	CREATE TABLE IF NOT EXISTS skips (
+		uid TEXT PRIMARY KEY,
+		seq INTEGER NOT NULL                     -- higher = skipped more recently
+	);`,
 
-// Store is an open focus-state database.
+	// 2: the journal. Times are RFC 3339 in UTC; dates are journal days.
+	`
+	CREATE TABLE journal_entries (
+		date                  TEXT PRIMARY KEY,
+		sleep_quality         INTEGER CHECK (sleep_quality BETWEEN 1 AND 10),
+		sleep_hours           REAL,
+		productivity          INTEGER CHECK (productivity BETWEEN 1 AND 10),
+		productive_hours      REAL,
+		productive_windows    TEXT,    -- JSON list of windows
+		aw_productive_minutes INTEGER,
+		aw_windows            TEXT,    -- JSON list of windows
+		sport                 INTEGER, -- 0 or 1
+		sport_type            TEXT,
+		sport_minutes         INTEGER,
+		steps                 INTEGER,
+		note                  TEXT,
+		updated_at            TEXT NOT NULL,
+		updated_by            TEXT NOT NULL
+	);
+	CREATE TABLE journal_items (
+		id         INTEGER PRIMARY KEY,
+		date       TEXT NOT NULL,
+		title      TEXT NOT NULL,
+		minutes    INTEGER,
+		kind       TEXT NOT NULL CHECK (kind IN ('computer', 'offline')),
+		source     TEXT NOT NULL CHECK (source IN ('focus', 'task', 'manual')),
+		ref_id     TEXT,
+		created_at TEXT NOT NULL
+	);
+	CREATE INDEX journal_items_by_date ON journal_items (date);
+	CREATE TABLE focus_sessions (
+		id         INTEGER PRIMARY KEY,
+		date       TEXT NOT NULL,          -- journal day the session started on
+		started_at TEXT NOT NULL,
+		ended_at   TEXT,                   -- NULL while it is running
+		label      TEXT,
+		kind       TEXT NOT NULL CHECK (kind IN ('computer', 'offline')),
+		source     TEXT,
+		task_uid   TEXT
+	);
+	CREATE INDEX focus_sessions_by_date ON focus_sessions (date);
+	-- At most one running session: all running rows would share the
+	-- value 1 in this partial index, which must be unique.
+	CREATE UNIQUE INDEX focus_sessions_one_running ON focus_sessions ((1)) WHERE ended_at IS NULL;`,
+}
+
+// migrate brings the database schema up to date.
+func migrate(db *sql.DB) error {
+	var version int
+	if err := db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil {
+		return err
+	}
+	if version > len(migrations) {
+		return fmt.Errorf("the database is from a newer beacon (schema version %d, this one knows %d)", version, len(migrations))
+	}
+	for v := version; v < len(migrations); v++ {
+		// Each step and its new version number are saved together or not
+		// at all.
+		tx, err := db.Begin()
+		if err != nil {
+			return err
+		}
+		if _, err := tx.Exec(migrations[v]); err != nil {
+			tx.Rollback()
+			return fmt.Errorf("schema step %d: %w", v+1, err)
+		}
+		if _, err := tx.Exec(fmt.Sprintf(`PRAGMA user_version = %d`, v+1)); err != nil {
+			tx.Rollback()
+			return err
+		}
+		if err := tx.Commit(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// Store is an open beacon database.
 type Store struct {
 	db *sql.DB
 }
@@ -48,7 +131,7 @@ func Open(path string) (*Store, error) {
 	// One connection is plenty for one person and avoids lock contention.
 	db.SetMaxOpenConns(1)
 
-	if _, err := db.Exec(schema); err != nil {
+	if err := migrate(db); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("cannot set up database %s (check BEACON_DB): %w", path, err)
 	}

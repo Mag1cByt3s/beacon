@@ -37,8 +37,9 @@ _beacon_journal_precmd() {
     unset BEACON_JOURNAL_OPEN
   fi
 }
-autoload -Uz add-zsh-hook
-add-zsh-hook precmd _beacon_journal_precmd
+# First in line, so a prompt built by another precmd hook already sees it.
+# ${a:#x} is a without x, so sourcing this twice adds it only once.
+precmd_functions=(_beacon_journal_precmd ${precmd_functions:#_beacon_journal_precmd})
 `,
 	"bash": `# beacon: show the current task when a new terminal opens.
 # Runs once per interactive shell, not on every prompt.

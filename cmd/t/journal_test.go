@@ -530,7 +530,12 @@ func TestJournalHookRuns(t *testing.T) {
 	}
 	cache := t.TempDir()
 	t.Setenv("XDG_CACHE_HOME", cache)
-	script := hooks["zsh-journal"] + "\n_beacon_journal_precmd; print -r -- \"[$BEACON_JOURNAL_OPEN]\"\n"
+	// A prompt built in a precmd hook registered before the journal hook,
+	// like a custom Starship setup, must see the current value. The hook is
+	// sourced twice, as a reloaded .zshrc would.
+	script := "show() { print -r -- \"[$BEACON_JOURNAL_OPEN]\" }\nprecmd_functions=(show)\n" +
+		hooks["zsh-journal"] + hooks["zsh-journal"] +
+		"\n(( ${#precmd_functions} == 2 )) || print duplicate\nfor f in $precmd_functions; do $f; done\n"
 	check := func(want string) {
 		t.Helper()
 		cmd := exec.Command(zsh, "-f", "-c", script)

@@ -14,7 +14,7 @@
 # beacon_group (str):      Group of that user.                    Default: "beacon"
 # beacon_listen (str):     Address to listen on.                  Default: "127.0.0.1:8080"
 #                          Use this jail's IP if the reverse proxy runs elsewhere.
-# beacon_db (str):         SQLite file for the focus state.
+# beacon_db (str):         SQLite file for the focus state and the journal.
 #                          Default: "/var/db/beacon/beacon.db"
 # beacon_env_file (str):   Non-secret BEACON_* settings, one VAR=value per line.
 #                          Default: "/usr/local/etc/beacon/beacon.env"

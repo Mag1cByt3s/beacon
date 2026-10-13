@@ -171,8 +171,10 @@ fetch -qo - http://10.0.0.5:8080/healthz
 ```
 
 If `deploy/rc.d/beacon` changed, copy and install it again as in steps 1 and 2.
-The focus state in `/var/db/beacon` is kept. To roll back, put
-`beacon.old` back and restart.
+The database in `/var/db/beacon` is kept; a new version updates its tables
+on start and an older one refuses to open it afterwards, so back it up
+(step 8) before updating. To roll back, put `beacon.old` back, restore the
+backup and restart.
 
 ### From one token to one token per client
 
@@ -192,3 +194,21 @@ sysrc -x beacon_token_file 2>/dev/null   # replaced by beacon_tokens_dir
 
 Also remove any `BEACON_TOKEN_FILE` line from `beacon.env`, and install the
 new `deploy/rc.d/beacon`.
+
+## 8. Backup
+
+`/var/db/beacon/beacon.db` holds the focus state and the journal. The focus
+state can be rebuilt, but the journal exists nowhere else, so back the file
+up. Copying it while beacon writes can give a broken copy; take a snapshot
+with SQLite instead (`pkg install sqlite3` in the jail):
+
+```sh
+install -d -m 0700 -o beacon -g beacon /var/db/beacon/backup
+su -m beacon -c 'sqlite3 /var/db/beacon/beacon.db ".backup /var/db/beacon/backup/beacon-$(date +%F).db"'
+```
+
+Run it daily from cron (`crontab -u beacon -e`, without the `su`), and keep
+the backups outside the jail too, for example in your ZFS snapshots or
+offsite backup. For a readable copy, the API exports CSV:
+`GET /api/journal/export.csv?from=2026-01-01&to=today` and
+`GET /api/journal/items/export.csv?...`.

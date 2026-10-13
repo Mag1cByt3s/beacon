@@ -23,6 +23,8 @@ Design principles (apply them to every feature):
 - **Language: Go.** The owner is new to Go: keep code idiomatic, simple and readable. Prefer the standard library. Add short comments where a Go idiom might be unfamiliar. No clever abstractions.
 - **Source of truth: Radicale (CalDAV), already running.** Tasks are `VTODO` items. Apple Reminders (iPhone), todoman and Merkuro (KDE) already sync with it directly. beacon must never break those clients.
 - **beacon does not own task data.** It reads and writes VTODOs in Radicale and only keeps its own *focus state* (current task, skip order) separately.
+- **beacon owns the journal.** Sleep and productivity entries, the things done (items) and focus sessions live only in beacon's SQLite database, so it needs backups (see `docs/deploy.md`). Completed VTODOs are read from Radicale (read-only) to suggest items.
+- **One token per API client**, in `BEACON_TOKENS_DIR` (file name = client name). The client `aw-sync` may only use `PUT /api/journal/{date}/aw`, and no other client may use it.
 - **Remote access:** an existing reverse proxy with its own subdomain terminates TLS. The beacon API requires a bearer token on every request.
 - **iPhone:** native Reminders handles capture and lists. beacon will later serve a PWA for the focus view only.
 
@@ -33,8 +35,9 @@ iPhone Reminders ─┐
 todoman (CLI)    ─┼──── CalDAV ────► Radicale (FreeBSD jail on "odin")
 Merkuro (KDE)    ─┘                       ▲
                                           │ CalDAV
-t (beacon CLI) ──── HTTPS + token ──► beacon server (Go, FreeBSD jail)
-                                          └── SQLite: focus state, keyed by VTODO UID
+t (beacon CLI)       ─┐
+iPhone shortcuts     ─┼── HTTPS + token ──► beacon server (Go, FreeBSD jail)
+beacon-aw-sync (AW)  ─┘                       └── SQLite: focus state (keyed by VTODO UID), journal
 ```
 
 Until the server milestone, the CLI talks to Radicale directly through the same internal package.
@@ -42,11 +45,20 @@ Until the server milestone, the CLI talks to Radicale directly through the same 
 ### Repository layout
 
 ```
-cmd/t/            CLI binary "t"
-cmd/beacon/       server binary (from milestone 3)
-internal/caldav/  CalDAV access: list, create, complete VTODOs
-internal/focus/   ordering + focus logic (pure, no I/O, well tested)
-internal/config/  config from environment variables
+cmd/t/              CLI binary "t"
+cmd/beacon/         server binary
+cmd/beacon-aw-sync/ sends ActivityWatch's productive time to the journal
+internal/caldav/    CalDAV access: list, create, complete VTODOs; read completed ones
+internal/focus/     ordering + focus logic (pure, no I/O, well tested)
+internal/journal/   journal day, entries, items, sessions, the evening suggestion (pure)
+internal/awsync/    ActivityWatch query, categories, productive windows
+internal/store/     SQLite with versioned migrations (PRAGMA user_version)
+internal/server/    HTTP API
+internal/api/       API types and the client used by t
+internal/config/    config from environment variables
+internal/queue/     offline capture queue
+nix/                home-manager module (flake output homeManagerModules.default)
+docs/               deploy.md, journal.md, ios-shortcuts.md
 ```
 
 ### Dependencies
@@ -78,9 +90,14 @@ internal/config/  config from environment variables
 | `BEACON_DEFAULT_LIST` | list for new captures | `Todo` |
 | `BEACON_SERVER_URL` | beacon API URL (from milestone 3) | `https://beacon.example.org` |
 | `BEACON_TOKEN` | API bearer token (from milestone 3) | read from env only |
-| `BEACON_TOKEN_FILE` | file holding the token; takes precedence over `BEACON_TOKEN`; the server refuses a file other users can read (from milestone 5) | `/usr/local/etc/beacon/token` |
+| `BEACON_TOKEN_FILE` | file holding a client's token, for `t` and `beacon-aw-sync`; takes precedence over `BEACON_TOKEN` | `/run/secrets/beacon-token` |
+| `BEACON_TOKENS_DIR` | server: directory with one token file per client, named after the client (`laptop`, `iphone`, `aw-sync`); refused if other users can open it. The server refuses `BEACON_TOKEN_FILE`/`BEACON_TOKEN` | `/usr/local/etc/beacon/tokens` |
 | `BEACON_LISTEN` | server listen address (from milestone 3) | `127.0.0.1:8080` (default) |
 | `BEACON_DB` | server SQLite file for focus state (from milestone 3) | `/var/db/beacon/beacon.db` |
+| `BEACON_JOURNAL_TZ` | time zone of the journal day | `Europe/Berlin` (default) |
+| `BEACON_JOURNAL_DAY_START` | wall-clock time when a journal day begins | `04:00` (default) |
+| `BEACON_AW_URL` | beacon-aw-sync: local ActivityWatch server | `http://localhost:5600` (default) |
+| `BEACON_AW_CONFIG` | beacon-aw-sync: categories file (JSON); built-in categories without it | `~/.config/beacon/aw.json` |
 | `BEACON_TRUSTED_PROXIES` | comma-separated IPs/CIDRs of reverse proxies whose `X-Forwarded-For` the server believes (rightmost untrusted entry is the client); empty by default, header ignored otherwise | `10.0.0.4` |
 
 Run the password command without a shell (split into argv), trim the trailing newline, and never log it.
@@ -94,6 +111,7 @@ Work on **one milestone at a time**. When it's done: build, run the tests, summa
 3. **Server.** `cmd/beacon`: HTTP JSON API (`GET /current`, `GET /tasks`, `POST /tasks`, `POST /current/done`, `POST /current/skip`), bearer token auth, SQLite focus state (current task, skip order), structured logging. The CLI switches to the API when `BEACON_SERVER_URL` is set.
 4. **Resilience.** The CLI queues captures in a local file when the server is unreachable and flushes them later. Shell hook snippet (bash/zsh) that prints the current task when a terminal opens, fast and silent on errors.
 5. **Deploy.** Cross-compile for FreeBSD (`GOOS=freebsd GOARCH=amd64 CGO_ENABLED=0`), an `rc.d` script for the jail, and a short `docs/deploy.md`.
+6. **Journal.** Sleep and productivity journal (`docs/journal.md`): SQLite tables with migrations, `/api/journal` and `/api/focus`, per-client tokens, `t journal`/`t did`/`t timer`, the home-manager module (reminders, prompt cache, KDE timer script), `beacon-aw-sync`, iPhone shortcuts (`docs/ios-shortcuts.md`). The journal day changes at 04:00 Europe/Berlin; "today" works as a date everywhere. Morning done = `sleep_quality` set, evening done = `productivity` set.
 
 Later, out of scope for now: KDE plasmoid and KRunner plugin, PWA focus view, focus extras (DND, site blocking), and an MCP server for Hermes Agent.
 

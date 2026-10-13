@@ -1,5 +1,5 @@
 # beacon
-Self-hosted focus tool on top of Radicale/CalDAV: shows exactly one task, catches distractions, and keeps your todo list in sight. Go server and CLI.
+Self-hosted focus tool on top of Radicale/CalDAV: shows exactly one task, catches distractions, and keeps your todo list in sight. Go server and CLI, with a small sleep and productivity journal.
 
 ## Configure
 
@@ -17,10 +17,12 @@ export BEACON_DEFAULT_LIST=Todo                     # where new tasks go, defaul
 The server additionally uses:
 
 ```sh
-export BEACON_TOKEN_FILE=/usr/local/etc/beacon/token   # required (or BEACON_TOKEN)
+export BEACON_TOKENS_DIR=/usr/local/etc/beacon/tokens  # required: one token file per client
 export BEACON_LISTEN=127.0.0.1:8080                    # default
-export BEACON_DB=/var/db/beacon/beacon.db              # focus state, default ./beacon.db
+export BEACON_DB=/var/db/beacon/beacon.db              # focus state and journal, default ./beacon.db
 export BEACON_TRUSTED_PROXIES=10.0.0.4                 # reverse proxies, see below
+export BEACON_JOURNAL_TZ=Europe/Berlin                 # default
+export BEACON_JOURNAL_DAY_START=04:00                  # when a journal day begins, default
 ```
 
 Behind a reverse proxy, `BEACON_TRUSTED_PROXIES` (comma-separated IPs or CIDR
@@ -28,17 +30,23 @@ ranges, empty by default) lists the proxies whose `X-Forwarded-For` header
 beacon believes, so the log shows the real client address. The header is
 ignored from everyone else.
 
-The token is at least 16 characters, for example from `openssl rand -hex 32`.
-`BEACON_TOKEN_FILE` names a file holding it and takes precedence over
-`BEACON_TOKEN`. The server refuses to start if other users can read the file
-(use `chmod 600`).
+Every client has its own token: each file in `BEACON_TOKENS_DIR` is one
+client, named like the file (`laptop`, `iphone`, `aw-sync`), and holds its
+token of at least 16 characters, for example from `openssl rand -hex 32`.
+The client `aw-sync` may only upload ActivityWatch data. The server refuses
+to start if other users can open the directory or read a token file (use
+`chmod 700` and `chmod 600`).
 
 `t` talks to the server when these are set, and to Radicale directly otherwise:
 
 ```sh
 export BEACON_SERVER_URL=https://beacon.example.org
-export BEACON_TOKEN_FILE=~/.config/beacon/token        # the same token as the server
+export BEACON_TOKEN_FILE=~/.config/beacon/token        # this client's token (tokens/laptop)
 ```
+
+On NixOS with home-manager, the flake's module does this:
+`programs.beacon = { enable = true; serverUrl = ...; tokenFile = ...; }`
+(see [docs/journal.md](docs/journal.md)).
 
 ## Run
 
@@ -108,6 +116,20 @@ saved tasks, quietly and for at most 2 seconds. Each saved task keeps the UID
 it was given when first captured, so sending it twice never creates a
 duplicate. Only captures are saved; `done` and `skip` never are.
 
+### Journal
+
+A daily journal of sleep, productive time, things done and sport, kept by
+the server (details in [docs/journal.md](docs/journal.md), iPhone shortcuts
+in [docs/ios-shortcuts.md](docs/ios-shortcuts.md)):
+
+```sh
+t journal                 # asks for what is missing today
+t journal show            # today's entry
+t did "HTB box" 90        # note something done, 90 minutes
+t timer start             # focus timer for the current task
+t timer stop              # stop it and note what was done
+```
+
 ### Shell hook
 
 Show the current task whenever a new terminal opens (once per shell, not on
@@ -124,7 +146,9 @@ password command and talk to Radicale, which is often too slow for 300 ms.
 
 ## API
 
-Every endpoint except `/healthz` needs `Authorization: Bearer <BEACON_TOKEN>`.
+Every endpoint except `/healthz` needs `Authorization: Bearer <token>` with
+the client's token. The journal endpoints are listed in
+[docs/journal.md](docs/journal.md).
 `503` means Radicale could not be reached; trying again later may work.
 
 | Endpoint | Does |
@@ -138,5 +162,5 @@ Every endpoint except `/healthz` needs `Authorization: Bearer <BEACON_TOKEN>`.
 | `POST /current/done` | complete the current task; `409` if it changed since it became current |
 | `POST /current/skip` | skip the current task and pick the next |
 
-beacon keeps only its focus state (current task, skip order) in SQLite,
-keyed by task UID. Tasks themselves stay in Radicale.
+beacon keeps its focus state (current task, skip order), keyed by task UID,
+and the journal in SQLite. Tasks themselves stay in Radicale.

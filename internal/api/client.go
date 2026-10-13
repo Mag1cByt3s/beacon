@@ -188,7 +188,11 @@ func (c *Client) do(ctx context.Context, method, path string, header http.Header
 		body = bytes.NewReader(data)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, method, c.base.JoinPath(path).String(), body)
+	// JoinPath would escape a "?", so the query is set separately.
+	path, query, _ := strings.Cut(path, "?")
+	target := c.base.JoinPath(path)
+	target.RawQuery = query
+	req, err := http.NewRequestWithContext(ctx, method, target.String(), body)
 	if err != nil {
 		return err
 	}

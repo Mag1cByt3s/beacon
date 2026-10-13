@@ -315,7 +315,11 @@ func (s *Server) newItem(date string, it journal.Item) (journal.Item, error) {
 		return journal.Item{}, badRequest{err}
 	}
 	it = it.Normalize()
-	it.ID, it.Date, it.CreatedAt = 0, date, s.now()
+	it.ID, it.Date = 0, date
+	// Items sent back in a PUT keep when they were first recorded.
+	if it.CreatedAt.IsZero() || it.CreatedAt.After(s.now()) {
+		it.CreatedAt = s.now()
+	}
 	return it, nil
 }
 

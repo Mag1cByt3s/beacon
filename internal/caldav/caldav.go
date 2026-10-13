@@ -64,6 +64,57 @@ func NewClient(endpoint, user, password string, lists []string) (*Client, error)
 // Completed and cancelled tasks are left out. Recurring tasks are included
 // and marked with Recurring.
 func (c *Client) OpenTasks(ctx context.Context) ([]focus.Task, error) {
+	objects, err := c.todoObjects(ctx)
+	if err != nil {
+		return nil, err
+	}
+	var tasks []focus.Task
+	for _, o := range objects {
+		task, ok := taskFromCalendar(o.obj.Data, o.list)
+		if ok {
+			task.Path = o.obj.Path
+			task.ETag = o.obj.ETag
+			tasks = append(tasks, task)
+		}
+	}
+	return tasks, nil
+}
+
+// CompletedTask is a task that was completed, and when.
+type CompletedTask struct {
+	UID       string
+	Summary   string
+	List      string
+	Completed time.Time
+}
+
+// Completed returns the tasks from the configured lists that were
+// completed from one moment (included) to another (excluded), by any
+// client. Recurring tasks are left out. It only reads.
+func (c *Client) Completed(ctx context.Context, from, to time.Time) ([]CompletedTask, error) {
+	objects, err := c.todoObjects(ctx)
+	if err != nil {
+		return nil, err
+	}
+	var done []CompletedTask
+	for _, o := range objects {
+		task, ok := completedFromCalendar(o.obj.Data, o.list)
+		if ok && !task.Completed.Before(from) && task.Completed.Before(to) {
+			done = append(done, task)
+		}
+	}
+	return done, nil
+}
+
+// listObject is a calendar object and the name of the list it is in.
+type listObject struct {
+	list string
+	obj  caldav.CalendarObject
+}
+
+// todoObjects returns the calendar objects that hold a VTODO, from the
+// configured lists.
+func (c *Client) todoObjects(ctx context.Context) ([]listObject, error) {
 	taskLists, err := c.taskLists(ctx)
 	if err != nil {
 		return nil, err
@@ -90,22 +141,17 @@ func (c *Client) OpenTasks(ctx context.Context) ([]focus.Task, error) {
 		},
 	}
 
-	var tasks []focus.Task
+	var all []listObject
 	for _, cal := range cals {
 		objects, err := c.dav.QueryCalendar(ctx, cal.Path, query)
 		if err != nil {
 			return nil, friendlyError(fmt.Errorf("cannot read list %q: %w", cal.Name, err))
 		}
 		for _, obj := range objects {
-			task, ok := taskFromCalendar(obj.Data, cal.Name)
-			if ok {
-				task.Path = obj.Path
-				task.ETag = obj.ETag
-				tasks = append(tasks, task)
-			}
+			all = append(all, listObject{list: cal.Name, obj: obj})
 		}
 	}
-	return tasks, nil
+	return all, nil
 }
 
 // taskLists returns all collections on the server that can hold tasks.

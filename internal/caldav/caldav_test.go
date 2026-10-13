@@ -6,6 +6,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Mag1cByt3s/beacon/internal/caldav/caldavtest"
 )
@@ -78,5 +79,44 @@ func TestOpenTasksWrongPassword(t *testing.T) {
 	_, err := c.OpenTasks(context.Background())
 	if !errors.Is(err, errLogin) {
 		t.Errorf("err = %v, want errLogin", err)
+	}
+}
+
+func TestCompleted(t *testing.T) {
+	srv, backend := caldavtest.NewServer(t)
+	add := func(name string, lines ...string) {
+		all := append([]string{"BEGIN:VTODO", "UID:" + name, "DTSTAMP:20261001T100000Z", "SUMMARY:" + name}, lines...)
+		backend.Add(t, caldavtest.TodoPath+name+".ics", append(all, "END:VTODO")...)
+	}
+	add("in-range", "STATUS:COMPLETED", "COMPLETED:20261013T150000Z")
+	add("at-start", "STATUS:COMPLETED", "COMPLETED:20261013T020000Z") // 04:00 Berlin, included
+	add("at-end", "STATUS:COMPLETED", "COMPLETED:20261014T020000Z")   // next day starts, excluded
+	add("yesterday", "STATUS:COMPLETED", "COMPLETED:20261012T150000Z")
+	add("no-status", "COMPLETED:20261013T160000Z") // done by COMPLETED alone
+	add("cancelled", "STATUS:CANCELLED", "COMPLETED:20261013T150000Z")
+	add("weekly", "STATUS:COMPLETED", "COMPLETED:20261013T150000Z", "RRULE:FREQ=WEEKLY")
+	add("open-one", "STATUS:NEEDS-ACTION")
+	// "done" from caldavtest is completed without a COMPLETED time: left out.
+
+	c, err := NewClient(srv.URL+"/", caldavtest.User, caldavtest.Password, []string{"Todo"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	from := time.Date(2026, 10, 13, 2, 0, 0, 0, time.UTC)
+	to := time.Date(2026, 10, 14, 2, 0, 0, 0, time.UTC)
+	done, err := c.Completed(context.Background(), from, to)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var uids []string
+	for _, task := range done {
+		uids = append(uids, task.UID)
+		if task.List != "Todo" || task.Summary != task.UID {
+			t.Errorf("task = %+v", task)
+		}
+	}
+	slices.Sort(uids)
+	if want := []string{"at-start", "in-range", "no-status"}; !slices.Equal(uids, want) {
+		t.Errorf("Completed = %q, want %q", uids, want)
 	}
 }

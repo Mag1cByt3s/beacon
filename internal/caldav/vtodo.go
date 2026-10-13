@@ -16,20 +16,7 @@ import (
 // carry a RECURRENCE-ID. The master describes the task; any RRULE or
 // RECURRENCE-ID marks it as recurring.
 func taskFromCalendar(cal *ical.Calendar, list string) (task focus.Task, ok bool) {
-	var master *ical.Component
-	recurring := false
-	for _, comp := range cal.Children {
-		if comp.Name != ical.CompToDo {
-			continue
-		}
-		hasRecurrenceID := comp.Props.Get(ical.PropRecurrenceID) != nil
-		if comp.Props.Get(ical.PropRecurrenceRule) != nil || hasRecurrenceID {
-			recurring = true
-		}
-		if master == nil || (!hasRecurrenceID && master.Props.Get(ical.PropRecurrenceID) != nil) {
-			master = comp
-		}
-	}
+	master, recurring := masterTodo(cal)
 	if master == nil || !isOpen(master) {
 		return focus.Task{}, false
 	}
@@ -49,6 +36,52 @@ func taskFromCalendar(cal *ical.Calendar, list string) (task focus.Task, ok bool
 	if p := props.Get(ical.PropPriority); p != nil {
 		// A broken PRIORITY is treated as "no priority" rather than an error.
 		task.Priority, _ = p.Int()
+	}
+	return task, true
+}
+
+// masterTodo returns the VTODO that describes the task in cal (not an
+// override with a RECURRENCE-ID), and whether the task is recurring. It
+// returns nil if cal holds no VTODO.
+func masterTodo(cal *ical.Calendar) (master *ical.Component, recurring bool) {
+	for _, comp := range cal.Children {
+		if comp.Name != ical.CompToDo {
+			continue
+		}
+		hasRecurrenceID := comp.Props.Get(ical.PropRecurrenceID) != nil
+		if comp.Props.Get(ical.PropRecurrenceRule) != nil || hasRecurrenceID {
+			recurring = true
+		}
+		if master == nil || (!hasRecurrenceID && master.Props.Get(ical.PropRecurrenceID) != nil) {
+			master = comp
+		}
+	}
+	return master, recurring
+}
+
+// completedFromCalendar returns the task in cal if it is completed (not
+// cancelled) and says when. Recurring tasks and tasks without a readable
+// COMPLETED time give ok == false.
+func completedFromCalendar(cal *ical.Calendar, list string) (task CompletedTask, ok bool) {
+	master, recurring := masterTodo(cal)
+	if master == nil || recurring || isOpen(master) {
+		return CompletedTask{}, false
+	}
+	if strings.EqualFold(text(master.Props, ical.PropStatus), "CANCELLED") {
+		return CompletedTask{}, false
+	}
+	completed, _ := dateTime(master.Props.Get(ical.PropCompleted))
+	if completed.IsZero() {
+		return CompletedTask{}, false
+	}
+	task = CompletedTask{
+		UID:       text(master.Props, ical.PropUID),
+		Summary:   strings.TrimSpace(text(master.Props, ical.PropSummary)),
+		List:      list,
+		Completed: completed,
+	}
+	if task.Summary == "" {
+		task.Summary = "(no title)"
 	}
 	return task, true
 }

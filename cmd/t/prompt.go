@@ -13,15 +13,32 @@ import (
 // terminal opens and must never make the user wait.
 const promptLimit = 300 * time.Millisecond
 
-// hooks are the shell snippets printed by t hook. They run t prompt once
-// when an interactive shell starts, not on every prompt (that would be
-// precmd in zsh or PROMPT_COMMAND in bash).
+// hooks are the shell snippets printed by t hook. The zsh and bash ones
+// run t prompt once when an interactive shell starts, not on every prompt
+// (that would be precmd in zsh or PROMPT_COMMAND in bash). zsh-journal
+// runs on every prompt, so it reads only a local file.
 var hooks = map[string]string{
 	"zsh": `# beacon: show the current task when a new terminal opens.
 # Runs once per interactive shell, not on every prompt.
 if [[ -o interactive ]] && (( $+commands[t] )); then
   command t prompt 2>/dev/null
 fi
+`,
+	"zsh-journal": `# beacon: set BEACON_JOURNAL_OPEN while a part of today's journal is
+# missing, for the prompt to show. It only reads a cache file, which
+# "t journal status --write-cache" keeps up to date (run it from a timer);
+# the prompt itself never touches the network.
+# Starship: [env_var.BEACON_JOURNAL_OPEN] with format = '[\[$env_value\]]($style) '
+# Plain zsh: setopt prompt_subst; RPROMPT='${BEACON_JOURNAL_OPEN:+[$BEACON_JOURNAL_OPEN]}'
+_beacon_journal_precmd() {
+  if [[ -s ${XDG_CACHE_HOME:-$HOME/.cache}/beacon/journal-open ]]; then
+    export BEACON_JOURNAL_OPEN="journal offen"
+  else
+    unset BEACON_JOURNAL_OPEN
+  fi
+}
+autoload -Uz add-zsh-hook
+add-zsh-hook precmd _beacon_journal_precmd
 `,
 	"bash": `# beacon: show the current task when a new terminal opens.
 # Runs once per interactive shell, not on every prompt.

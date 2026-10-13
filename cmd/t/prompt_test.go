@@ -67,7 +67,7 @@ func runPromptCommand(t *testing.T) string {
 	t.Helper()
 	var out strings.Builder
 	start := time.Now()
-	if err := run([]string{"prompt"}, &out); err != nil {
+	if err := run([]string{"prompt"}, strings.NewReader(""), &out); err != nil {
 		t.Errorf("err = %v, want nil (exit code 0)", err)
 	}
 	if d := time.Since(start); d > promptLimit+200*time.Millisecond {
@@ -145,7 +145,7 @@ func TestClientUsesTokenFile(t *testing.T) {
 	t.Setenv("BEACON_TOKEN", "token-from-env")
 	t.Setenv("BEACON_TOKEN_FILE", path)
 
-	if err := run([]string{"focus"}, io.Discard); err != nil {
+	if err := run([]string{"focus"}, strings.NewReader(""), io.Discard); err != nil {
 		t.Fatal(err)
 	}
 	if gotAuth != "Bearer token-from-the-file" {
@@ -156,7 +156,7 @@ func TestClientUsesTokenFile(t *testing.T) {
 func TestHookOutput(t *testing.T) {
 	for _, shell := range []string{"zsh", "bash"} {
 		var out strings.Builder
-		if err := run([]string{"hook", shell}, &out); err != nil {
+		if err := run([]string{"hook", shell}, strings.NewReader(""), &out); err != nil {
 			t.Fatalf("%s: %v", shell, err)
 		}
 		hook := out.String()

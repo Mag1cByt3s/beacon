@@ -12,12 +12,16 @@
 //	t edit            full-screen editor: rename, add and remove tasks
 //	t prompt          the current task or nothing, fast (for the shell hook)
 //	t hook zsh|bash   print the shell hook
+//	t journal         fill in today's sleep and productivity journal
+//	t did <words>     note something done today, for the journal
+//	t timer start     start a focus timer (also stop, toggle, status)
 //
 // With BEACON_SERVER_URL set, t talks to the beacon server; otherwise it
 // talks to the CalDAV server directly.
 package main
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"fmt"
@@ -31,6 +35,7 @@ import (
 	"github.com/Mag1cByt3s/beacon/internal/config"
 	"github.com/Mag1cByt3s/beacon/internal/focus"
 	"github.com/Mag1cByt3s/beacon/internal/queue"
+	"golang.org/x/term"
 )
 
 const usage = `usage:
@@ -46,6 +51,22 @@ const usage = `usage:
   t edit            rename, add and remove tasks in a full-screen editor
   t prompt          show the current task quickly, or nothing
   t hook zsh|bash   print a snippet for your shell rc file
+
+journal (needs the beacon server):
+  t journal                 fill in what is missing today (morning or evening)
+  t journal --morning       sleep: quality and hours
+  t journal --evening       productive time, things done, productivity, sport
+  t journal show [date]     show a day ("today" or 2026-10-13)
+  t journal status [--quiet] [--write-cache]
+                            exit code 0 if today is complete, 1 if not, 2 on errors
+  t did <words> [min] [--offline]
+                            note something done today, e.g. t did "HTB box" 90
+  t timer start [label] [--offline]
+                            start a focus timer; without a label, for the current task
+  t timer stop [words]      stop it and note what was done (asks in a terminal)
+  t timer toggle            stop the running timer or start one
+  t timer status            show the running timer and today's total
+  t hook zsh-journal        print a zsh snippet that sets BEACON_JOURNAL_OPEN
 `
 
 // Time limits, so t never hangs the terminal.
@@ -57,20 +78,34 @@ const (
 
 // command is what the user asked for, decided from the arguments alone.
 type command struct {
-	name    string // "list", "focus", "done", "skip", "add", "rm", "undo", "edit", "prompt", "hook" or "help"
+	name    string // "list", "focus", "done", "skip", "add", "rm", "undo", "edit", "prompt", "hook", "journal", "timer", "did" or "help"
 	summary string // title of the new task, only for "add"
 	query   string // words to look for in titles, only for "rm"
-	shell   string // "zsh" or "bash", only for "hook"
+	shell   string // "zsh", "bash" or "zsh-journal", only for "hook"
+
+	journal journalCmd // only for "journal"
+	timer   timerCmd   // only for "timer"
+	did     didCmd     // only for "did"
 }
 
 func main() {
-	if err := run(os.Args[1:], os.Stdout); err != nil {
-		fmt.Fprintln(os.Stderr, "t:", err)
-		os.Exit(1)
+	err := run(os.Args[1:], os.Stdin, os.Stdout)
+	if err == nil {
+		return
 	}
+	// errors.As finds an exitCode inside err, if there is one.
+	var ec exitCode
+	if errors.As(err, &ec) {
+		if ec.err != nil {
+			fmt.Fprintln(os.Stderr, "t:", ec.err)
+		}
+		os.Exit(ec.code)
+	}
+	fmt.Fprintln(os.Stderr, "t:", err)
+	os.Exit(1)
 }
 
-func run(args []string, out io.Writer) error {
+func run(args []string, in io.Reader, out io.Writer) error {
 	cmd, err := parseArgs(args)
 	if err != nil {
 		return err
@@ -88,22 +123,53 @@ func run(args []string, out io.Writer) error {
 	}
 
 	cfg := config.Load()
-	b, err := newBackend(context.Background(), cfg, os.Stderr)
+	var b backend
+	if journalCommand(cmd.name) && !cfg.UseServer() {
+		err = fmt.Errorf("t %s needs the beacon server; set BEACON_SERVER_URL", cmd.name)
+	} else {
+		b, err = newBackend(context.Background(), cfg, os.Stderr)
+	}
 	if err != nil {
+		if cmd.name == "journal" && cmd.journal.mode == "status" {
+			return statusError(cmd.journal, err)
+		}
 		return err
 	}
-	a := &app{b: b, out: out, defaultList: cfg.DefaultList, queue: openQueue(), lastPath: lastCapturePath()}
+	a := &app{
+		b:           b,
+		in:          bufio.NewReader(in),
+		out:         out,
+		defaultList: cfg.DefaultList,
+		queue:       openQueue(),
+		lastPath:    lastCapturePath(),
+	}
 	// out.(*os.File) asks whether out is a real file such as os.Stdout;
 	// only then can it be a terminal.
 	if f, ok := out.(*os.File); ok {
 		a.tty = detectTerminal(f)
 	}
+	if f, ok := in.(*os.File); ok {
+		a.interactive = term.IsTerminal(int(f.Fd()))
+	}
 
 	// First send captures saved while offline. This never stops the
 	// command itself. Not for undo: a capture still waiting in the queue
 	// is simply taken out of it instead of being sent and then deleted.
-	if cmd.name != "undo" {
+	// Not for journal status either, which a timer runs and which should
+	// stay quick.
+	if cmd.name != "undo" && !(cmd.name == "journal" && cmd.journal.mode == "status") {
 		a.flush()
+	}
+
+	// These ask questions, which take as long as they take; each request
+	// gets its own time limit instead.
+	switch cmd.name {
+	case "journal":
+		return a.runJournal(cmd.journal)
+	case "timer":
+		return a.runTimer(cmd.timer)
+	case "did":
+		return a.did(cmd.did)
 	}
 
 	// The editor runs as long as the user likes; each of its changes gets
@@ -121,11 +187,28 @@ func run(args []string, out io.Writer) error {
 type app struct {
 	b           backend
 	out         io.Writer
-	defaultList string       // tasks from other lists are marked with their list name
-	queue       *queue.Queue // captures saved while offline; nil if there is none
-	offline     bool         // the last flush could not reach the server
-	lastPath    string       // file remembering the last capture for t undo; "" for none
-	tty         terminal     // the terminal t prints to; zero value for pipes and files
+	defaultList string           // tasks from other lists are marked with their list name
+	queue       *queue.Queue     // captures saved while offline; nil if there is none
+	offline     bool             // the last flush could not reach the server
+	lastPath    string           // file remembering the last capture for t undo; "" for none
+	tty         terminal         // the terminal t prints to; zero value for pipes and files
+	in          *bufio.Reader    // answers to the questions of t journal and t timer
+	interactive bool             // in is a terminal, so t timer stop may ask
+	clock       func() time.Time // the time; nil means time.Now (tests set it)
+}
+
+// now returns the current time.
+func (a *app) now() time.Time {
+	if a.clock != nil {
+		return a.clock()
+	}
+	return time.Now()
+}
+
+// journalCommand reports whether name is one of the journal commands,
+// which need the beacon server.
+func journalCommand(name string) bool {
+	return name == "journal" || name == "timer" || name == "did"
 }
 
 // parseArgs decides what to do. A first word that is a command runs that
@@ -148,9 +231,18 @@ func parseArgs(args []string) (command, error) {
 		return command{name: "help"}, nil
 	case "hook":
 		if len(args) != 2 || hooks[args[1]] == "" {
-			return command{}, errors.New("usage: t hook zsh|bash")
+			return command{}, errors.New("usage: t hook zsh|bash|zsh-journal")
 		}
 		return command{name: "hook", shell: args[1]}, nil
+	case "journal":
+		jc, err := parseJournalArgs(args[1:])
+		return command{name: "journal", journal: jc}, err
+	case "timer":
+		tc, err := parseTimerArgs(args[1:])
+		return command{name: "timer", timer: tc}, err
+	case "did":
+		dc, err := parseDidArgs(args[1:])
+		return command{name: "did", did: dc}, err
 	case "rm":
 		query := strings.Join(strings.Fields(strings.Join(args[1:], " ")), " ")
 		if query == "" {

@@ -21,10 +21,6 @@ import (
 // Locking: handlers that need both locks take s.mu (focus state) before
 // s.journalMu, always in that order, so they cannot block each other.
 
-// SuspiciousAfter is how long a session may run before it is probably one
-// that was forgotten.
-const SuspiciousAfter = 4 * time.Hour
-
 // startTaskTimeout bounds how long a start waits for CalDAV to name the
 // current task; without an answer the session starts without a label.
 const startTaskTimeout = 3 * time.Second
@@ -146,7 +142,7 @@ func (s *Server) stopSession(w http.ResponseWriter, r *http.Request, req api.Foc
 		Action:     "stopped",
 		Session:    sess,
 		Minutes:    minutes,
-		Suspicious: sess.End.Sub(sess.Start) > SuspiciousAfter,
+		Suspicious: sess.End.Sub(sess.Start) > journal.SuspiciousAfter,
 	}
 	s.log.Info("focus session stopped", "id", sess.ID, "minutes", minutes, "client", clientName(r))
 

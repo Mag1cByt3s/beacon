@@ -9,7 +9,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/emersion/go-ical"
+
 	"github.com/Mag1cByt3s/beacon/internal/api"
+	"github.com/Mag1cByt3s/beacon/internal/caldav/caldavtest"
 	"github.com/Mag1cByt3s/beacon/internal/journal"
 )
 
@@ -247,5 +250,47 @@ func TestJournalCSVExport(t *testing.T) {
 	items, err := csv.NewReader(strings.NewReader(body)).ReadAll()
 	if err != nil || len(items) != 2 || items[1][1] != "Box, user flag" || items[1][2] != "120" {
 		t.Errorf("items CSV = %q, %v", items, err)
+	}
+}
+
+func TestJournalSuggestion(t *testing.T) {
+	e := newEnv(t)
+
+	// A focus session and a manual item via the API.
+	e.setNow("2026-10-13 09:00")
+	e.do("POST", "/api/focus/start", `{"label": "HTB"}`, nil)
+	e.setNow("2026-10-13 10:00")
+	e.do("POST", "/api/focus/stop", `{"result": "User-Flag"}`, nil)
+	e.do("POST", "/api/journal/today/items", `{"title": "Keller", "minutes": 30, "kind": "offline"}`, nil)
+	// A task completed on the phone in the afternoon (14:00 UTC is 16:00 in Berlin).
+	todo := e.caldav.Todo(caldavtest.TodoPath + "1.ics")
+	todo.Props.SetText(ical.PropStatus, "COMPLETED")
+	todo.Props.SetDateTime(ical.PropCompleted, time.Date(2026, 10, 13, 14, 0, 0, 0, time.UTC))
+
+	e.setNow("2026-10-13 23:30")
+	var sg journal.Suggestion
+	if got := e.do("GET", "/api/journal/today/suggestion", "", &sg); got != http.StatusOK {
+		t.Fatalf("status %d", got)
+	}
+	if sg.Date != "2026-10-13" || sg.Source != "sessions" || sg.ProductiveMinutes != 90 ||
+		sg.ComputerMinutes != 60 || sg.OfflineMinutes != 30 || len(sg.ProductiveWindows) != 1 || len(sg.Warnings) != 0 {
+		t.Errorf("suggestion = %+v", sg)
+	}
+	var titles []string
+	for _, it := range sg.Items {
+		titles = append(titles, it.Title)
+	}
+	if !slices.Equal(titles, []string{"User-Flag", "Keller", "Open task"}) {
+		t.Errorf("items = %q, want the two recorded and the task from the phone", titles)
+	}
+
+	// Without CalDAV the suggestion still comes, with a warning.
+	e.davStop()
+	sg = journal.Suggestion{}
+	if got := e.do("GET", "/api/journal/today/suggestion", "", &sg); got != http.StatusOK {
+		t.Fatalf("status without CalDAV: %d", got)
+	}
+	if len(sg.Warnings) != 1 || sg.ProductiveMinutes != 90 || len(sg.Items) != 2 {
+		t.Errorf("suggestion without CalDAV = %+v", sg)
 	}
 }

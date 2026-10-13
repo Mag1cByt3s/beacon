@@ -2,6 +2,7 @@ package server
 
 import (
 	"bytes"
+	"context"
 	"encoding/csv"
 	"encoding/json"
 	"errors"
@@ -181,6 +182,51 @@ func (s *Server) dateRange(w http.ResponseWriter, r *http.Request) (from, to str
 		return "", "", false
 	}
 	return from, to, true
+}
+
+// suggestionTimeout bounds how long the suggestion waits for CalDAV; the
+// tasks completed on the phone are then left out, with a warning.
+const suggestionTimeout = 10 * time.Second
+
+// suggestion proposes the evening part of a day from the focus sessions,
+// the items, the tasks completed in CalDAV and ActivityWatch's values.
+func (s *Server) suggestion(w http.ResponseWriter, r *http.Request) {
+	date, ok := s.date(w, r)
+	if !ok {
+		return
+	}
+	ctx := r.Context()
+	in := journal.SuggestInput{Date: date, Clock: s.Clock, Now: s.now()}
+	var err error
+	if in.Entry, _, err = s.store.Entry(ctx, date); err != nil {
+		s.fail(w, err)
+		return
+	}
+	if in.Sessions, err = s.store.Sessions(ctx, date, date); err != nil {
+		s.fail(w, err)
+		return
+	}
+	if in.Items, err = s.store.Items(ctx, date, date); err != nil {
+		s.fail(w, err)
+		return
+	}
+
+	var warnings []string
+	start, end, _ := s.Clock.Bounds(date) // date was checked above
+	caldavCtx, cancel := context.WithTimeout(ctx, suggestionTimeout)
+	defer cancel()
+	completed, err := s.tasks.Completed(caldavCtx, start, end)
+	if err != nil {
+		s.log.Warn("suggestion without the tasks from CalDAV", "err", err)
+		warnings = append(warnings, "tasks completed on other devices are missing: "+err.Error())
+	}
+	for _, task := range completed {
+		in.Completed = append(in.Completed, journal.CompletedTask{UID: task.UID, Title: task.Summary})
+	}
+
+	sg := journal.Suggest(in)
+	sg.Warnings = warnings
+	writeJSON(w, http.StatusOK, sg)
 }
 
 // ---- Items ----

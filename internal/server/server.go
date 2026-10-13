@@ -34,6 +34,7 @@ type Tasks interface {
 	Complete(ctx context.Context, task focus.Task) error
 	Delete(ctx context.Context, task focus.Task) error
 	Rename(ctx context.Context, task focus.Task, summary string) (etag string, err error)
+	Completed(ctx context.Context, from, to time.Time) ([]caldav.CompletedTask, error)
 }
 
 // Server handles API requests.
@@ -126,14 +127,15 @@ func (s *Server) Handler() http.Handler {
 		"POST /current/skip":  s.skip,
 
 		// The journal. "today" works wherever a {date} is expected.
-		"GET /api/journal":                  s.listJournal,
-		"GET /api/journal/export.csv":       s.exportJournal,
-		"GET /api/journal/items/export.csv": s.exportItems,
-		"GET /api/journal/{date}":           s.getJournal,
-		"PATCH /api/journal/{date}":         s.patchJournal,
-		"GET /api/journal/{date}/items":     s.getItems,
-		"POST /api/journal/{date}/items":    s.addItem,
-		"PUT /api/journal/{date}/items":     s.replaceItems,
+		"GET /api/journal":                   s.listJournal,
+		"GET /api/journal/export.csv":        s.exportJournal,
+		"GET /api/journal/items/export.csv":  s.exportItems,
+		"GET /api/journal/{date}":            s.getJournal,
+		"PATCH /api/journal/{date}":          s.patchJournal,
+		"GET /api/journal/{date}/items":      s.getItems,
+		"POST /api/journal/{date}/items":     s.addItem,
+		"PUT /api/journal/{date}/items":      s.replaceItems,
+		"GET /api/journal/{date}/suggestion": s.suggestion,
 
 		// Focus sessions.
 		"POST /api/focus/start":  s.focusStart,

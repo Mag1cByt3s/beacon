@@ -37,7 +37,7 @@ func newServer(t *testing.T) (*httptest.Server, *caldavtest.Backend) {
 	}
 	t.Cleanup(func() { st.Close() })
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	srv := httptest.NewServer(server.New(dav, st, testToken, "Todo", logger).Handler())
+	srv := httptest.NewServer(server.New(dav, st, map[string]string{"laptop": testToken}, "Todo", logger).Handler())
 	t.Cleanup(srv.Close)
 	return srv, backend
 }

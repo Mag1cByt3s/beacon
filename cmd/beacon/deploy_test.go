@@ -36,6 +36,7 @@ run_rc_command() {
 	echo "pidfile=$pidfile"
 	echo "procname=$procname"
 	echo "required=$required_files"
+	echo "required_dirs=$required_dirs"
 	su -m "$_user" -c "$command $command_args"
 }
 `
@@ -94,7 +95,7 @@ func TestRCScriptStart(t *testing.T) {
 		"beacon_listen=10.0.0.5:8080",
 		"beacon_db=" + filepath.Join(dbDir, "beacon.db"),
 		"beacon_env_file=" + envFile,
-		"beacon_token_file=/usr/local/etc/beacon/token",
+		"beacon_tokens_dir=/usr/local/etc/beacon/tokens",
 		"beacon_logfile=" + logFile,
 		"beacon_pidfile=" + filepath.Join(runDir, "beacon.pid"),
 	}, "\n")+"\n", 0o644)
@@ -102,7 +103,14 @@ func TestRCScriptStart(t *testing.T) {
 	start := func() string {
 		t.Helper()
 		cmd := exec.Command("sh", testScript, "start")
-		cmd.Env = append(os.Environ(), "TEST_RC_CONF="+rcConf)
+		// Only the settings from the test reach the script, not BEACON_*
+		// variables of whoever runs the tests.
+		for _, kv := range os.Environ() {
+			if !strings.HasPrefix(kv, "BEACON_") {
+				cmd.Env = append(cmd.Env, kv)
+			}
+		}
+		cmd.Env = append(cmd.Env, "TEST_RC_CONF="+rcConf)
 		out, err := cmd.CombinedOutput()
 		if err != nil {
 			t.Fatalf("start: %v\n%s", err, out)
@@ -115,18 +123,22 @@ func TestRCScriptStart(t *testing.T) {
 		"su_user=" + me.Username,
 		"procname=/usr/sbin/daemon",
 		"pidfile=" + filepath.Join(runDir, "beacon.pid"),
-		"required=" + envFile + " /usr/local/etc/beacon/token",
+		"required=" + envFile + "\n",
+		"required_dirs=/usr/local/etc/beacon/tokens",
 		"daemon args: -f -r -R 5 -H -P " + filepath.Join(runDir, "beacon.pid") + " -o " + logFile + " -t beacon /usr/local/bin/beacon",
 		// Seen by the child process, so exported:
 		"BEACON_CALDAV_URL=https://dav.example.org/",
 		"BEACON_CALDAV_PASSWORD_CMD=cat /usr/local/etc/beacon/radicale.pass",
 		"BEACON_LISTEN=10.0.0.5:8080",
 		"BEACON_DB=" + filepath.Join(dbDir, "beacon.db"),
-		"BEACON_TOKEN_FILE=/usr/local/etc/beacon/token",
+		"BEACON_TOKENS_DIR=/usr/local/etc/beacon/tokens",
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("output lacks %q:\n%s", want, got)
 		}
+	}
+	if strings.Contains(got, "BEACON_TOKEN_FILE") {
+		t.Errorf("the old single token still reaches beacon:\n%s", got)
 	}
 	if strings.Contains(got, " -u ") {
 		t.Errorf("daemon got -u, but it already runs as beacon_user:\n%s", got)
@@ -168,6 +180,7 @@ func TestRCScriptDefaults(t *testing.T) {
 	for _, want := range []string{
 		`: "${beacon_pidfile:=/var/run/beacon/beacon.pid}"`,
 		`: "${beacon_logfile:=/var/log/beacon.log}"`,
+		`: "${beacon_tokens_dir:=/usr/local/etc/beacon/tokens}"`,
 		`procname="/usr/sbin/daemon"`,
 	} {
 		if !strings.Contains(string(script), want) {

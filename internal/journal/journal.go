@@ -9,6 +9,10 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	// The blank import builds the time zone database into the binary, so
+	// "Europe/Berlin" works even where the system has none (a bare jail).
+	_ "time/tzdata"
 )
 
 // DateLayout is how journal days are written: "2006-01-02".

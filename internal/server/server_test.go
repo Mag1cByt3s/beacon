@@ -20,8 +20,11 @@ import (
 	"github.com/Mag1cByt3s/beacon/internal/store"
 )
 
-// A throwaway token for tests. Not a secret.
-const testToken = "test-token-0123456789"
+// Throwaway tokens for tests. Not secrets.
+const (
+	testToken   = "test-token-0123456789" // client "laptop"
+	testAWToken = "aw-sync-token-0123456" // client "aw-sync"
+)
 
 // env is one running beacon server on top of a fake CalDAV server.
 type env struct {
@@ -59,7 +62,7 @@ func newEnvWithProxies(t *testing.T, proxies []netip.Prefix) *env {
 
 	logs := &bytes.Buffer{}
 	logger := slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
-	server := New(client, st, testToken, "Todo", logger)
+	server := New(client, st, map[string]string{"laptop": testToken, "aw-sync": testAWToken}, "Todo", logger)
 	server.TrustedProxies = proxies
 	srv := httptest.NewServer(server.Handler())
 	t.Cleanup(srv.Close)
@@ -200,6 +203,35 @@ func TestAuth(t *testing.T) {
 	}
 	if status(e.caldav.Todo(caldavtest.GroceriesPath+"1.ics")) == "COMPLETED" {
 		t.Error("a rejected request completed a task")
+	}
+}
+
+func TestClientsAndRights(t *testing.T) {
+	e := newEnv(t)
+	tests := []struct {
+		name, auth string
+		want       int
+	}{
+		{"laptop", "Bearer " + testToken, http.StatusOK},
+		{"aw-sync may not use the task API", "Bearer " + testAWToken, http.StatusForbidden},
+		{"unknown token", "Bearer someone-elses-token-0123", http.StatusUnauthorized},
+	}
+	for _, tt := range tests {
+		var body map[string]any
+		if got := e.doWithAuth("GET", "/current", tt.auth, "", &body); got != tt.want {
+			t.Errorf("%s: status %d, want %d (%v)", tt.name, got, tt.want, body)
+		}
+	}
+	logs := e.logs.String()
+	for _, want := range []string{"client=laptop", "client=aw-sync", `msg="client may not use this endpoint"`} {
+		if !strings.Contains(logs, want) {
+			t.Errorf("log lacks %q:\n%s", want, logs)
+		}
+	}
+	for _, secret := range []string{testToken, testAWToken} {
+		if strings.Contains(logs, secret) {
+			t.Errorf("log contains a token")
+		}
 	}
 }
 

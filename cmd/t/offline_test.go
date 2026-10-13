@@ -241,7 +241,7 @@ func TestFlushViaServer(t *testing.T) {
 	}
 	defer st.Close()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	srv := httptest.NewServer(server.New(client, st, "test-token-0123456789", "Todo", logger).Handler())
+	srv := httptest.NewServer(server.New(client, st, map[string]string{"laptop": "test-token-0123456789"}, "Todo", logger).Handler())
 	defer srv.Close()
 
 	apiClient, _ := api.NewClient(srv.URL, "test-token-0123456789")

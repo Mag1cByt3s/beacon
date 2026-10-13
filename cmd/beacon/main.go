@@ -9,9 +9,11 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"net/http"
 	"os"
 	"os/signal"
+	"slices"
 	"syscall"
 	"time"
 
@@ -32,16 +34,20 @@ func main() {
 
 func run(log *slog.Logger) error {
 	cfg := config.Load()
-	if err := cfg.ReadTokenFile(true); err != nil {
+	if err := cfg.CheckServer(); err != nil {
 		return err
 	}
-	if err := cfg.CheckServer(); err != nil {
+	tokens, err := config.ReadClientTokens(cfg.TokensDir)
+	if err != nil {
+		return err
+	}
+	clock, err := cfg.JournalClock()
+	if err != nil {
 		return err
 	}
 
 	password := ""
 	if cfg.User != "" {
-		var err error
 		password, err = cfg.Password(context.Background(), os.Stderr)
 		if err != nil {
 			return err
@@ -63,8 +69,9 @@ func run(log *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-	apiServer := server.New(client, st, cfg.Token, cfg.DefaultList, log)
+	apiServer := server.New(client, st, tokens, cfg.DefaultList, log)
 	apiServer.TrustedProxies = proxies
+	apiServer.Clock = clock
 
 	srv := &http.Server{
 		Addr:              cfg.Listen,
@@ -83,8 +90,11 @@ func run(log *slog.Logger) error {
 	// an error or a stop signal.
 	errc := make(chan error, 1)
 	go func() {
+		// Only the client names are logged, never their tokens.
+		names := slices.Sorted(maps.Keys(tokens))
 		log.Info("beacon listening", "addr", cfg.Listen, "db", cfg.DB, "lists", cfg.Lists,
-			"default_list", cfg.DefaultList, "trusted_proxies", cfg.TrustedProxies)
+			"default_list", cfg.DefaultList, "trusted_proxies", cfg.TrustedProxies, "clients", names,
+			"journal_day_start", cfg.JournalDayStart+" "+cfg.JournalZone)
 		errc <- srv.ListenAndServe()
 	}()
 

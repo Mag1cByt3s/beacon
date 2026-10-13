@@ -17,7 +17,7 @@ func clearEnv(t *testing.T) {
 		"BEACON_CALDAV_URL", "BEACON_CALDAV_USER", "BEACON_CALDAV_PASSWORD_CMD",
 		"BEACON_LISTS", "BEACON_DEFAULT_LIST",
 		"BEACON_SERVER_URL", "BEACON_TOKEN", "BEACON_TOKEN_FILE", "BEACON_LISTEN", "BEACON_DB",
-		"BEACON_TRUSTED_PROXIES",
+		"BEACON_TRUSTED_PROXIES", "BEACON_TOKENS_DIR", "BEACON_JOURNAL_TZ", "BEACON_JOURNAL_DAY_START",
 	} {
 		t.Setenv(name, "")
 	}
@@ -28,10 +28,12 @@ func TestLoadDefaults(t *testing.T) {
 
 	c := Load()
 	want := Config{
-		Lists:       []string{"Todo"},
-		DefaultList: "Todo",
-		Listen:      "127.0.0.1:8080",
-		DB:          "beacon.db",
+		Lists:           []string{"Todo"},
+		DefaultList:     "Todo",
+		Listen:          "127.0.0.1:8080",
+		DB:              "beacon.db",
+		JournalZone:     "Europe/Berlin",
+		JournalDayStart: "04:00",
 	}
 	if !reflect.DeepEqual(c, want) {
 		t.Errorf("Load() = %+v, want %+v", c, want)
@@ -53,7 +55,7 @@ func TestLoadLists(t *testing.T) {
 
 func TestChecks(t *testing.T) {
 	const url = "https://dav.example.org/"
-	const token = "0123456789abcdef0123"
+	const dir = "/usr/local/etc/beacon/tokens"
 
 	tests := []struct {
 		name    string
@@ -66,18 +68,27 @@ func TestChecks(t *testing.T) {
 		{"caldav user without password command",
 			map[string]string{"BEACON_CALDAV_URL": url, "BEACON_CALDAV_USER": "someone"},
 			Config.CheckCalDAV, "BEACON_CALDAV_PASSWORD_CMD"},
-		{"server ok", map[string]string{"BEACON_CALDAV_URL": url, "BEACON_TOKEN": token}, Config.CheckServer, ""},
-		{"server without token", map[string]string{"BEACON_CALDAV_URL": url}, Config.CheckServer, "BEACON_TOKEN_FILE or BEACON_TOKEN is not set"},
-		{"server with short token",
-			map[string]string{"BEACON_CALDAV_URL": url, "BEACON_TOKEN": "short"},
-			Config.CheckServer, "too short"},
-		{"server needs caldav", map[string]string{"BEACON_TOKEN": token}, Config.CheckServer, "BEACON_CALDAV_URL"},
+		{"server ok", map[string]string{"BEACON_CALDAV_URL": url, "BEACON_TOKENS_DIR": dir}, Config.CheckServer, ""},
+		{"server without tokens dir", map[string]string{"BEACON_CALDAV_URL": url}, Config.CheckServer, "BEACON_TOKENS_DIR is not set"},
+		{"server still with a token file",
+			map[string]string{"BEACON_CALDAV_URL": url, "BEACON_TOKENS_DIR": dir, "BEACON_TOKEN_FILE": "/usr/local/etc/beacon/token"},
+			Config.CheckServer, "move the token to a file in BEACON_TOKENS_DIR"},
+		{"server still with a token",
+			map[string]string{"BEACON_CALDAV_URL": url, "BEACON_TOKENS_DIR": dir, "BEACON_TOKEN": "token-from-before"},
+			Config.CheckServer, "no longer uses"},
+		{"server needs caldav", map[string]string{"BEACON_TOKENS_DIR": dir}, Config.CheckServer, "BEACON_CALDAV_URL"},
 		{"server with trusted proxies",
-			map[string]string{"BEACON_CALDAV_URL": url, "BEACON_TOKEN": token, "BEACON_TRUSTED_PROXIES": "10.0.0.4, 192.168.1.0/24,::1"},
+			map[string]string{"BEACON_CALDAV_URL": url, "BEACON_TOKENS_DIR": dir, "BEACON_TRUSTED_PROXIES": "10.0.0.4, 192.168.1.0/24,::1"},
 			Config.CheckServer, ""},
 		{"server with a bad trusted proxy",
-			map[string]string{"BEACON_CALDAV_URL": url, "BEACON_TOKEN": token, "BEACON_TRUSTED_PROXIES": "10.0.0.4,caddy"},
+			map[string]string{"BEACON_CALDAV_URL": url, "BEACON_TOKENS_DIR": dir, "BEACON_TRUSTED_PROXIES": "10.0.0.4,caddy"},
 			Config.CheckServer, `"caddy" is not an IP address`},
+		{"server with a bad journal zone",
+			map[string]string{"BEACON_CALDAV_URL": url, "BEACON_TOKENS_DIR": dir, "BEACON_JOURNAL_TZ": "Europe/Atlantis"},
+			Config.CheckServer, "BEACON_JOURNAL_TZ"},
+		{"server with a bad day start",
+			map[string]string{"BEACON_CALDAV_URL": url, "BEACON_TOKENS_DIR": dir, "BEACON_JOURNAL_DAY_START": "4"},
+			Config.CheckServer, "BEACON_JOURNAL_DAY_START"},
 		{"api ok", map[string]string{"BEACON_SERVER_URL": "https://beacon.example.org", "BEACON_TOKEN": "x"}, Config.CheckAPI, ""},
 		{"api without token", map[string]string{"BEACON_SERVER_URL": "https://beacon.example.org"}, Config.CheckAPI, "BEACON_TOKEN"},
 	}
@@ -209,6 +220,92 @@ func TestProxyPrefixes(t *testing.T) {
 		if !reflect.DeepEqual(gotStrings, tt.want) {
 			t.Errorf("%q: got %q, want %q", tt.in, gotStrings, tt.want)
 		}
+	}
+}
+
+func TestJournalClock(t *testing.T) {
+	clearEnv(t)
+	c, err := Load().JournalClock()
+	if err != nil || c.Loc.String() != "Europe/Berlin" || c.Hour != 4 || c.Minute != 0 {
+		t.Errorf("default JournalClock = %+v, %v", c, err)
+	}
+	t.Setenv("BEACON_JOURNAL_TZ", "UTC")
+	t.Setenv("BEACON_JOURNAL_DAY_START", "05:30")
+	c, err = Load().JournalClock()
+	if err != nil || c.Loc.String() != "UTC" || c.Hour != 5 || c.Minute != 30 {
+		t.Errorf("JournalClock = %+v, %v", c, err)
+	}
+}
+
+// tokensDir creates a token directory with the given files (name to
+// content) and modes 0700/0600.
+func tokensDir(t *testing.T, files map[string]string) string {
+	t.Helper()
+	dir := filepath.Join(t.TempDir(), "tokens")
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for name, content := range files {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return dir
+}
+
+func TestReadClientTokens(t *testing.T) {
+	const (
+		laptop = "laptop-token-0123456789"
+		iphone = "iphone-token-0123456789"
+		aw     = "aw-sync-token-012345678"
+	)
+	dir := tokensDir(t, map[string]string{
+		"laptop":      laptop + "\n",
+		"iphone":      iphone,
+		"aw-sync":     aw,
+		".laptop.swp": "editor junk", // ignored
+	})
+	got, err := ReadClientTokens(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]string{"laptop": laptop, "iphone": iphone, "aw-sync": aw}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("ReadClientTokens = %v, want %v", got, want)
+	}
+}
+
+func TestReadClientTokensRefusals(t *testing.T) {
+	const good = "a-good-token-0123456789"
+	tests := []struct {
+		name    string
+		files   map[string]string
+		setup   func(dir string)
+		wantErr string
+	}{
+		{"missing dir", nil, func(dir string) { os.RemoveAll(dir) }, "cannot read BEACON_TOKENS_DIR"},
+		{"dir readable by others", map[string]string{"laptop": good}, func(dir string) { os.Chmod(dir, 0o755) }, "chmod 700"},
+		{"file readable by others", map[string]string{"laptop": good}, func(dir string) { os.Chmod(filepath.Join(dir, "laptop"), 0o644) }, "chmod 600"},
+		{"short token", map[string]string{"laptop": "short"}, nil, `client "laptop" is too short`},
+		{"same token twice", map[string]string{"laptop": good, "iphone": good}, nil, "the same token"},
+		{"bad client name", map[string]string{"Laptop Pro": good}, nil, "client name"},
+		{"empty dir", map[string]string{}, nil, "holds no tokens"},
+		{"only a hidden file", map[string]string{".backup": good}, nil, "holds no tokens"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := tokensDir(t, tt.files)
+			if tt.setup != nil {
+				tt.setup(dir)
+			}
+			_, err := ReadClientTokens(dir)
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("err = %v, want one mentioning %q", err, tt.wantErr)
+			}
+			if strings.Contains(err.Error(), good) {
+				t.Errorf("error message contains a token: %v", err)
+			}
+		})
 	}
 }
 

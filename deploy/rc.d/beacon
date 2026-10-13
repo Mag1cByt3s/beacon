@@ -18,13 +18,14 @@
 #                          Default: "/var/db/beacon/beacon.db"
 # beacon_env_file (str):   Non-secret BEACON_* settings, one VAR=value per line.
 #                          Default: "/usr/local/etc/beacon/beacon.env"
-# beacon_token_file (str): File holding the API token.
-#                          Default: "/usr/local/etc/beacon/token"
+# beacon_tokens_dir (str): Directory with one token file per API client
+#                          (laptop, iphone, aw-sync), mode 0700.
+#                          Default: "/usr/local/etc/beacon/tokens"
 # beacon_logfile (str):    Where beacon's log goes.               Default: "/var/log/beacon.log"
 # beacon_pidfile (str):    Pidfile of the daemon(8) supervisor.
 #                          Default: "/var/run/beacon/beacon.pid"
 #
-# Secrets (the token, the Radicale password) live in files under
+# Secrets (the client tokens, the Radicale password) live in files under
 # /usr/local/etc/beacon/, mode 0600, owned by beacon_user. Never put them in
 # rc.conf or in the env file.
 
@@ -41,7 +42,7 @@ load_rc_config "$name"
 : "${beacon_listen:=127.0.0.1:8080}"
 : "${beacon_db:=/var/db/beacon/beacon.db}"
 : "${beacon_env_file:=/usr/local/etc/beacon/beacon.env}"
-: "${beacon_token_file:=/usr/local/etc/beacon/token}"
+: "${beacon_tokens_dir:=/usr/local/etc/beacon/tokens}"
 : "${beacon_logfile:=/var/log/beacon.log}"
 : "${beacon_pidfile:=/var/run/beacon/beacon.pid}"
 
@@ -60,7 +61,8 @@ pidfile="${beacon_pidfile}"
 procname="/usr/sbin/daemon"
 command="/usr/sbin/daemon"
 command_args="-f -r -R 5 -H -P ${pidfile} -o ${beacon_logfile} -t ${name} /usr/local/bin/beacon"
-required_files="${beacon_env_file} ${beacon_token_file}"
+required_files="${beacon_env_file}"
+required_dirs="${beacon_tokens_dir}"
 
 start_precmd="beacon_prestart"
 
@@ -94,7 +96,7 @@ beacon_prestart()
     set +a
     export BEACON_LISTEN="${beacon_listen}"
     export BEACON_DB="${beacon_db}"
-    export BEACON_TOKEN_FILE="${beacon_token_file}"
+    export BEACON_TOKENS_DIR="${beacon_tokens_dir}"
 }
 
 run_rc_command "$1"

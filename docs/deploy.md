@@ -49,11 +49,16 @@ EOF
 chmod 0644 /usr/local/etc/beacon/beacon.env
 ```
 
-Secrets go in files owned by `beacon` with mode 0600. A fresh API token:
+Secrets go in files owned by `beacon` with mode 0600. Every API client gets
+its own token, in a file named after the client; the name is recorded with
+journal changes, and the client `aw-sync` may only upload ActivityWatch data:
 
 ```sh
-(umask 077 && openssl rand -hex 32 > /usr/local/etc/beacon/token)
-chown beacon:beacon /usr/local/etc/beacon/token
+install -d -m 0700 -o beacon -g beacon /usr/local/etc/beacon/tokens
+for client in laptop iphone aw-sync; do
+  (umask 077 && openssl rand -hex 32 > /usr/local/etc/beacon/tokens/$client)
+done
+chown beacon:beacon /usr/local/etc/beacon/tokens/*
 ```
 
 The Radicale password (create the file empty, then type the password into
@@ -64,7 +69,8 @@ install -m 0600 -o beacon -g beacon /dev/null /usr/local/etc/beacon/radicale.pas
 ee /usr/local/etc/beacon/radicale.pass
 ```
 
-beacon refuses to start if other users can read the token file.
+beacon refuses to start if other users can open the tokens directory or
+read a token file.
 
 Set the jail's time zone to yours, so "overdue" and "due today" are right:
 
@@ -91,7 +97,7 @@ block in quick proto tcp to 10.0.0.5 port 8080
 ```
 
 Other rc.conf settings (`beacon_user`, `beacon_db`, `beacon_env_file`,
-`beacon_token_file`, `beacon_logfile`, `beacon_pidfile`) are described at the
+`beacon_tokens_dir`, `beacon_logfile`, `beacon_pidfile`) are described at the
 top of the rc.d script. The log is `/var/log/beacon.log`. To rotate it, add
 `/usr/local/etc/newsyslog.conf.d/beacon.conf` (a fresh jail may not have
 that folder yet). newsyslog recreates the log owned by `beacon`, then sends
@@ -145,7 +151,7 @@ private there too:
 
 ```sh
 mkdir -p ~/.config/beacon
-(umask 077 && ssh root@odin jexec beacon cat /usr/local/etc/beacon/token > ~/.config/beacon/token)
+(umask 077 && ssh root@odin jexec beacon cat /usr/local/etc/beacon/tokens/laptop > ~/.config/beacon/token)
 
 export BEACON_SERVER_URL=https://beacon.example.org
 export BEACON_TOKEN_FILE=~/.config/beacon/token
@@ -167,3 +173,22 @@ fetch -qo - http://10.0.0.5:8080/healthz
 If `deploy/rc.d/beacon` changed, copy and install it again as in steps 1 and 2.
 The focus state in `/var/db/beacon` is kept. To roll back, put
 `beacon.old` back and restart.
+
+### From one token to one token per client
+
+Older versions had a single token in `/usr/local/etc/beacon/token`. The
+server now refuses to start with it and says so. Move it to the laptop's
+file, so the laptop keeps working unchanged, and add the other clients:
+
+```sh
+install -d -m 0700 -o beacon -g beacon /usr/local/etc/beacon/tokens
+mv /usr/local/etc/beacon/token /usr/local/etc/beacon/tokens/laptop
+for client in iphone aw-sync; do
+  (umask 077 && openssl rand -hex 32 > /usr/local/etc/beacon/tokens/$client)
+done
+chown beacon:beacon /usr/local/etc/beacon/tokens/*
+sysrc -x beacon_token_file 2>/dev/null   # replaced by beacon_tokens_dir
+```
+
+Also remove any `BEACON_TOKEN_FILE` line from `beacon.env`, and install the
+new `deploy/rc.d/beacon`.

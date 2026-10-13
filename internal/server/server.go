@@ -9,6 +9,7 @@ import (
 	"crypto/subtle"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/netip"
@@ -19,6 +20,7 @@ import (
 	"github.com/Mag1cByt3s/beacon/internal/api"
 	"github.com/Mag1cByt3s/beacon/internal/caldav"
 	"github.com/Mag1cByt3s/beacon/internal/focus"
+	"github.com/Mag1cByt3s/beacon/internal/journal"
 	"github.com/Mag1cByt3s/beacon/internal/store"
 )
 
@@ -38,7 +40,7 @@ type Tasks interface {
 type Server struct {
 	tasks       Tasks
 	store       *store.Store
-	tokenHash   [sha256.Size]byte
+	clients     []client // who may use the API
 	defaultList string
 	log         *slog.Logger
 	now         func() time.Time // replaceable in tests
@@ -47,6 +49,9 @@ type Server struct {
 	// tells the client's address; see clientIP. Empty: trust no one.
 	TrustedProxies []netip.Prefix
 
+	// Clock says when journal days start. New sets 04:00 Europe/Berlin.
+	Clock journal.Clock
+
 	// mu makes requests that read and change the focus state run one at a
 	// time, so two clients cannot both pick or complete a task at once.
 	mu sync.Mutex
@@ -54,15 +59,47 @@ type Server struct {
 
 // New creates a server. token is the bearer token clients must send; new
 // tasks go to defaultList.
-func New(tasks Tasks, st *store.Store, token, defaultList string, log *slog.Logger) *Server {
-	return &Server{
+func New(tasks Tasks, st *store.Store, tokens map[string]string, defaultList string, log *slog.Logger) *Server {
+	s := &Server{
 		tasks:       tasks,
 		store:       st,
-		tokenHash:   sha256.Sum256([]byte(token)),
 		defaultList: defaultList,
 		log:         log,
 		now:         time.Now,
 	}
+	for name, token := range tokens {
+		s.clients = append(s.clients, client{name: name, hash: sha256.Sum256([]byte(token))})
+	}
+	// The time zone data is built into the binary (package journal), so
+	// this cannot fail.
+	s.Clock, _ = journal.NewClock("Europe/Berlin", "04:00")
+	return s
+}
+
+// AWSyncClient is the client that uploads ActivityWatch data. It may use
+// only the endpoint for that, and only it may use that endpoint.
+const AWSyncClient = "aw-sync"
+
+// client is one API client, known by the hash of its token.
+type client struct {
+	name string
+	hash [sha256.Size]byte
+}
+
+// Who may use a route.
+var (
+	everyClientButSync = func(name string) bool { return name != AWSyncClient }
+	onlySync           = func(name string) bool { return name == AWSyncClient }
+)
+
+// clientKey is the context key under which requireClient stores the name
+// of the client that sent the request.
+type clientKey struct{}
+
+// clientName returns the name of the client that sent the request.
+func clientName(r *http.Request) string {
+	name, _ := r.Context().Value(clientKey{}).(string)
+	return name
 }
 
 // Handler returns the HTTP handler with all routes, auth and logging.
@@ -85,7 +122,7 @@ func (s *Server) Handler() http.Handler {
 		"POST /current/skip":  s.skip,
 	}
 	for pattern, handler := range routes {
-		mux.Handle(pattern, s.requireToken(handler))
+		mux.Handle(pattern, s.requireClient(everyClientButSync, handler))
 	}
 
 	// Anything else is not part of the API: 404, without asking for a
@@ -102,21 +139,50 @@ func (s *Server) Handler() http.Handler {
 	return s.logRequests(mux)
 }
 
-// requireToken lets a request through only with the right bearer token.
-func (s *Server) requireToken(next http.Handler) http.Handler {
+// requireClient lets a request through only with the bearer token of a
+// client that allowed accepts. The handler can ask for the client's name
+// with clientName.
+func (s *Server) requireClient(allowed func(name string) bool, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		token, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
-		// Compare hashes, not the tokens: both have the same length, so
-		// ConstantTimeCompare's time reveals nothing, not even the length.
-		got := sha256.Sum256([]byte(token))
-		if !ok || subtle.ConstantTimeCompare(got[:], s.tokenHash[:]) != 1 {
+		name, ok := s.authenticate(r)
+		if !ok {
 			s.log.Warn("rejected request without valid token", "remote", s.clientIP(r), "path", r.URL.Path)
 			w.Header().Set("WWW-Authenticate", "Bearer")
 			writeJSON(w, http.StatusUnauthorized, api.ErrorResponse{Error: "unauthorized"})
 			return
 		}
-		next.ServeHTTP(w, r)
+		// Tell logRequests (whose recorder w is) who this is.
+		if rec, ok := w.(*statusRecorder); ok {
+			rec.client = name
+		}
+		if !allowed(name) {
+			s.log.Warn("client may not use this endpoint", "client", name, "path", r.URL.Path)
+			writeJSON(w, http.StatusForbidden, api.ErrorResponse{Error: fmt.Sprintf("client %q may not use this endpoint", name)})
+			return
+		}
+		// context.WithValue makes a copy of the request context that also
+		// carries the client name.
+		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), clientKey{}, name)))
 	})
+}
+
+// authenticate returns the name of the client whose token the request
+// carries.
+func (s *Server) authenticate(r *http.Request) (name string, ok bool) {
+	token, found := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
+	if !found {
+		return "", false
+	}
+	// Compare hashes, not the tokens: they all have the same length, so
+	// ConstantTimeCompare's time reveals nothing, not even the length.
+	// Every client is compared, also after a match, for the same reason.
+	got := sha256.Sum256([]byte(token))
+	for _, c := range s.clients {
+		if subtle.ConstantTimeCompare(got[:], c.hash[:]) == 1 {
+			name = c.name
+		}
+	}
+	return name, name != ""
 }
 
 func (s *Server) getCurrent(w http.ResponseWriter, r *http.Request) {
@@ -565,6 +631,7 @@ func (s *Server) logRequests(next http.Handler) http.Handler {
 			"method", r.Method,
 			"path", r.URL.Path,
 			"status", rec.status,
+			"client", rec.client,
 			"remote", s.clientIP(r),
 			"duration", time.Since(start).Round(time.Millisecond),
 		)
@@ -634,7 +701,8 @@ func parseAddr(s string) (netip.Addr, bool) {
 type statusRecorder struct {
 	http.ResponseWriter
 	status       int
-	unknownRoute bool // set when no API route matched the request
+	unknownRoute bool   // set when no API route matched the request
+	client       string // set when a client was recognized by its token
 }
 
 func (r *statusRecorder) WriteHeader(status int) {

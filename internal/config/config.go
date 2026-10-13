@@ -10,10 +10,13 @@ import (
 	"net/netip"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
+
+	"github.com/Mag1cByt3s/beacon/internal/journal"
 )
 
-// MinTokenLength is the shortest BEACON_TOKEN the server accepts.
+// MinTokenLength is the shortest token the server accepts.
 const MinTokenLength = 16
 
 // Config holds all of beacon's settings. Which ones are required depends
@@ -36,6 +39,14 @@ type Config struct {
 	// Addresses or CIDR ranges of reverse proxies whose X-Forwarded-For
 	// header the server believes; see ProxyPrefixes.
 	TrustedProxies []string
+
+	// TokensDir holds one token file per client; see ReadClientTokens.
+	TokensDir string
+
+	// When a journal day starts: JournalDayStart ("04:00") in the time
+	// zone JournalZone ("Europe/Berlin"); see JournalClock.
+	JournalZone     string
+	JournalDayStart string
 }
 
 // Load reads the configuration from the environment and fills in defaults.
@@ -54,12 +65,22 @@ func Load() Config {
 		DB:          env("BEACON_DB"),
 
 		TrustedProxies: splitList(os.Getenv("BEACON_TRUSTED_PROXIES")),
+		TokensDir:      env("BEACON_TOKENS_DIR"),
+
+		JournalZone:     env("BEACON_JOURNAL_TZ"),
+		JournalDayStart: env("BEACON_JOURNAL_DAY_START"),
 	}
 	if len(c.Lists) == 0 {
 		c.Lists = []string{"Todo"}
 	}
 	if c.DefaultList == "" {
 		c.DefaultList = "Todo"
+	}
+	if c.JournalZone == "" {
+		c.JournalZone = "Europe/Berlin"
+	}
+	if c.JournalDayStart == "" {
+		c.JournalDayStart = "04:00"
 	}
 	if c.Listen == "" {
 		c.Listen = "127.0.0.1:8080"
@@ -87,21 +108,114 @@ func (c Config) CheckCalDAV() error {
 	return nil
 }
 
-// CheckServer checks the settings the beacon server needs.
+// CheckServer checks the settings the beacon server needs. The tokens
+// themselves are read by ReadClientTokens.
 func (c Config) CheckServer() error {
 	if err := c.CheckCalDAV(); err != nil {
 		return err
 	}
-	if c.Token == "" {
-		return errors.New("BEACON_TOKEN_FILE or BEACON_TOKEN is not set; the server will not start without a token (create one with: openssl rand -hex 32)")
+	// The server has one token per client now; a single token is a
+	// leftover from before and would silently be ignored.
+	if c.TokenFile != "" || c.Token != "" {
+		return errors.New("the server no longer uses BEACON_TOKEN_FILE or BEACON_TOKEN: move the token to a file in BEACON_TOKENS_DIR named after the client (for example tokens/laptop) and unset them; see docs/deploy.md")
 	}
-	if len(c.Token) < MinTokenLength {
-		return fmt.Errorf("the token is too short; use at least %d characters (create one with: openssl rand -hex 32)", MinTokenLength)
+	if c.TokensDir == "" {
+		return errors.New("BEACON_TOKENS_DIR is not set; it is a directory with one token file per client (laptop, iphone, aw-sync)")
 	}
 	if _, err := c.ProxyPrefixes(); err != nil {
 		return err
 	}
+	if _, err := c.JournalClock(); err != nil {
+		return err
+	}
 	return nil
+}
+
+// JournalClock returns when journal days start, from JournalZone and
+// JournalDayStart.
+func (c Config) JournalClock() (journal.Clock, error) {
+	clock, err := journal.NewClock(c.JournalZone, c.JournalDayStart)
+	if err != nil {
+		return journal.Clock{}, fmt.Errorf("BEACON_JOURNAL_TZ / BEACON_JOURNAL_DAY_START: %w", err)
+	}
+	return clock, nil
+}
+
+// ReadClientTokens reads the clients' tokens from dir: every file in it is
+// one client, named like the file ("laptop", "iphone", "aw-sync"), and
+// holds that client's token. The result maps client names to tokens.
+//
+// Other users must not be able to open the directory or the files, every
+// token needs MinTokenLength characters, and no two clients may share a
+// token (the server could not tell them apart).
+func ReadClientTokens(dir string) (map[string]string, error) {
+	info, err := os.Stat(dir)
+	if err != nil {
+		return nil, fmt.Errorf("cannot read BEACON_TOKENS_DIR: %w", err)
+	}
+	if !info.IsDir() {
+		return nil, fmt.Errorf("BEACON_TOKENS_DIR %s is not a directory", dir)
+	}
+	// Perm()&0o077 keeps only the group and other bits.
+	if info.Mode().Perm()&0o077 != 0 {
+		return nil, fmt.Errorf("BEACON_TOKENS_DIR %s can be accessed by other users (mode %04o); run: chmod 700 %s",
+			dir, info.Mode().Perm(), dir)
+	}
+
+	files, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, fmt.Errorf("cannot read BEACON_TOKENS_DIR: %w", err)
+	}
+	tokens := map[string]string{}
+	owner := map[string]string{} // token -> client, to find duplicates
+	for _, f := range files {
+		name := f.Name()
+		if strings.HasPrefix(name, ".") {
+			continue // editor backups and the like
+		}
+		if !validClientName(name) {
+			return nil, fmt.Errorf("token file %q: use a client name of lower-case letters, digits and - (like aw-sync)", name)
+		}
+		path := filepath.Join(dir, name)
+		fi, err := os.Stat(path)
+		if err != nil {
+			return nil, fmt.Errorf("cannot read token file %s: %w", path, err)
+		}
+		if !fi.Mode().IsRegular() {
+			return nil, fmt.Errorf("token file %s is not a regular file", path)
+		}
+		if fi.Mode().Perm()&0o077 != 0 {
+			return nil, fmt.Errorf("token file %s can be accessed by other users (mode %04o); run: chmod 600 %s",
+				path, fi.Mode().Perm(), path)
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return nil, fmt.Errorf("cannot read token file %s: %w", path, err)
+		}
+		token := strings.TrimSpace(string(data))
+		if len(token) < MinTokenLength {
+			return nil, fmt.Errorf("token for client %q is too short; use at least %d characters (create one with: openssl rand -hex 32)", name, MinTokenLength)
+		}
+		if other, dup := owner[token]; dup {
+			return nil, fmt.Errorf("clients %q and %q have the same token; give each its own", other, name)
+		}
+		owner[token] = name
+		tokens[name] = token
+	}
+	if len(tokens) == 0 {
+		return nil, fmt.Errorf("BEACON_TOKENS_DIR %s holds no tokens; add a file per client, e.g. laptop", dir)
+	}
+	return tokens, nil
+}
+
+func validClientName(name string) bool {
+	for i, r := range name {
+		ok := r >= 'a' && r <= 'z' || r >= '0' && r <= '9' || (r == '-' && i > 0)
+		if !ok {
+			return false
+		}
+	}
+	return name != ""
 }
 
 // ProxyPrefixes parses TrustedProxies into address ranges. A single

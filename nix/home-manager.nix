@@ -1,6 +1,7 @@
 # home-manager module for beacon's t CLI and the journal helpers:
 # reminders when a part of the journal is missing, the prompt cache for
-# `t hook zsh-journal`, and a script for a KDE timer shortcut.
+# `t hook zsh-journal`, a script for a KDE timer shortcut, and
+# beacon-aw-sync for ActivityWatch.
 #
 # The flake passes itself in as `self`, so the default package is the t
 # of the same beacon revision.
@@ -14,6 +15,8 @@ self:
 let
   cfg = config.programs.beacon;
   journal = cfg.journal;
+  awSync = cfg.awSync;
+  packages = self.packages.${pkgs.stdenv.hostPlatform.system};
   t = lib.getExe cfg.package;
 
   # Systemd user services and KDE shortcuts do not see
@@ -106,7 +109,7 @@ in
 
     package = lib.mkOption {
       type = lib.types.package;
-      default = self.packages.${pkgs.stdenv.hostPlatform.system}.t;
+      default = packages.t;
       defaultText = lib.literalExpression "beacon.packages.\${system}.t";
       description = "The t package.";
     };
@@ -171,6 +174,59 @@ in
     };
   };
 
+  options.programs.beacon.awSync = {
+    enable = lib.mkEnableOption "sending ActivityWatch's productive time to the journal (beacon-aw-sync)";
+
+    package = lib.mkOption {
+      type = lib.types.package;
+      default = packages.beacon-aw-sync;
+      defaultText = lib.literalExpression "beacon.packages.\${system}.beacon-aw-sync";
+      description = "The beacon-aw-sync package.";
+    };
+
+    tokenFile = lib.mkOption {
+      type = lib.types.str;
+      example = "/run/secrets/beacon-aw-sync-token";
+      description = "File holding the token of the client aw-sync, the only one the server lets send this.";
+    };
+
+    url = lib.mkOption {
+      type = lib.types.str;
+      default = "http://localhost:5600";
+      description = "URL of the local ActivityWatch server (awatcher or aw-server).";
+    };
+
+    categories = lib.mkOption {
+      type = lib.types.nullOr (pkgs.formats.json { }).type;
+      default = null;
+      example = lib.literalExpression ''
+        {
+          productive = "Arbeit";
+          merge_gap_minutes = 10;
+          min_window_minutes = 15;
+          rules = [
+            { category = [ "Arbeit" ]; app = "konsole|ghostty|codium|nvim"; }
+            { category = [ "Arbeit" "Lernvideos" ]; title = "IppSec|0xdf"; }
+            { category = [ "Ablenkung" ]; title = "YouTube|Reddit"; }
+          ];
+        }
+      '';
+      description = ''
+        The categories file (see docs/journal.md). null uses the built-in
+        categories.
+      '';
+    };
+
+    times = lib.mkOption {
+      type = lib.types.listOf lib.types.str;
+      default = [
+        "hourly"
+        "23:15"
+      ];
+      description = "When to sync (systemd OnCalendar times).";
+    };
+  };
+
   config = lib.mkIf cfg.enable (
     lib.mkMerge [
       {
@@ -228,6 +284,32 @@ in
             format = "[\\[$env_value\\]]($style) ";
             style = "bold yellow";
           };
+        };
+      })
+
+      (lib.mkIf awSync.enable {
+        systemd.user.services.beacon-aw-sync = {
+          Unit.Description = "Send ActivityWatch's productive time to the beacon journal";
+          Service = {
+            Type = "oneshot";
+            Environment = [
+              "BEACON_SERVER_URL=${cfg.serverUrl}"
+              "BEACON_TOKEN_FILE=${awSync.tokenFile}"
+              "BEACON_AW_URL=${awSync.url}"
+            ]
+            ++ lib.optional (awSync.categories != null) "BEACON_AW_CONFIG=${
+              (pkgs.formats.json { }).generate "beacon-aw-categories.json" awSync.categories
+            }";
+            ExecStart = lib.getExe awSync.package;
+          };
+        };
+        systemd.user.timers.beacon-aw-sync = {
+          Unit.Description = "Send ActivityWatch's productive time to the beacon journal";
+          Timer = {
+            OnCalendar = awSync.times;
+            Persistent = true;
+          };
+          Install.WantedBy = [ "timers.target" ];
         };
       })
     ]

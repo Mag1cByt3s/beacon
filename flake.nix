@@ -69,6 +69,10 @@
             pname = "beacon";
             description = "beacon server: HTTP API with focus state on top of CalDAV";
           };
+          beacon-aw-sync = buildBeacon {
+            pname = "beacon-aw-sync";
+            description = "Sends ActivityWatch's productive time to the beacon journal";
+          };
           beacon-freebsd-amd64 = buildBeacon {
             pname = "beacon-freebsd-amd64";
             cmd = "beacon";

@@ -82,3 +82,11 @@ func (c *Client) FocusStatus(ctx context.Context, date string) (FocusStatus, err
 	err := c.do(ctx, http.MethodGet, "api/focus?date="+url.QueryEscape(date), nil, nil, &status)
 	return status, err
 }
+
+// PutAW stores the productive computer time ActivityWatch measured on a
+// day. Only the aw-sync client may do this.
+func (c *Client) PutAW(ctx context.Context, date string, req AWRequest) (JournalResponse, error) {
+	var resp JournalResponse
+	err := c.do(ctx, http.MethodPut, "api/journal/"+url.PathEscape(date)+"/aw", nil, req, &resp)
+	return resp, err
+}

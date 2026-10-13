@@ -134,6 +134,12 @@ func (s *Server) Handler() http.Handler {
 		"GET /api/journal/{date}/items":     s.getItems,
 		"POST /api/journal/{date}/items":    s.addItem,
 		"PUT /api/journal/{date}/items":     s.replaceItems,
+
+		// Focus sessions.
+		"POST /api/focus/start":  s.focusStart,
+		"POST /api/focus/stop":   s.focusStop,
+		"POST /api/focus/toggle": s.focusToggle,
+		"GET /api/focus":         s.focusStatus,
 	}
 	for pattern, handler := range routes {
 		mux.Handle(pattern, s.requireClient(everyClientButSync, handler))
@@ -468,6 +474,7 @@ func (s *Server) done(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.log.Info("task completed", "uid", task.UID)
+	s.journalTaskDone(ctx, order[0])
 
 	// Forget the done task and pick the next one from what is left.
 	var rest []focus.Task

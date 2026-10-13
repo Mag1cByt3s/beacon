@@ -210,3 +210,40 @@ type AWRequest struct {
 	Minutes int              `json:"minutes"`
 	Windows []journal.Window `json:"windows"`
 }
+
+// ---- Focus sessions ----
+//
+//	POST /api/focus/start    FocusRequest (optional) -> FocusResponse; 409 if one is running
+//	POST /api/focus/stop     FocusRequest (optional) -> FocusResponse; 409 if none is running
+//	POST /api/focus/toggle   FocusRequest (optional) -> FocusResponse (starts or stops)
+//	GET  /api/focus?date=    FocusStatus (date defaults to today)
+
+// FocusRequest is the optional body of the focus endpoints. Label and Kind
+// are for starting: without a label, the current task is used. Result is
+// for stopping: what was done, which becomes a journal item with the
+// session's minutes.
+type FocusRequest struct {
+	Label  string `json:"label,omitempty"`
+	Kind   string `json:"kind,omitempty"` // computer (default) or offline
+	Result string `json:"result,omitempty"`
+}
+
+// FocusResponse says what the request did ("started" or "stopped"), with
+// the session and, after a stop with a result, the new journal item.
+// Suspicious is set for a session of more than 4 hours, which was probably
+// not stopped in time.
+type FocusResponse struct {
+	Action     string          `json:"action"`
+	Session    journal.Session `json:"session"`
+	Minutes    int             `json:"minutes"`
+	Suspicious bool            `json:"suspicious,omitempty"`
+	Item       *journal.Item   `json:"item,omitempty"`
+}
+
+// FocusStatus is the running session, if any, and the sessions of a day.
+type FocusStatus struct {
+	Date     string            `json:"date"`
+	Running  *journal.Session  `json:"running"`
+	Sessions []journal.Session `json:"sessions"`
+	Minutes  int               `json:"minutes"` // of the stopped sessions
+}

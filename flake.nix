@@ -79,6 +79,10 @@
         }
       );
 
+      # home-manager module: t, its settings, and the journal helpers
+      # (see docs/journal.md).
+      homeManagerModules.default = import ./nix/home-manager.nix self;
+
       # `nix flake check` makes sure the FreeBSD package really is a static
       # FreeBSD binary (a wrong GOOS once produced a Linux one).
       checks = forAllSystems (pkgs: {

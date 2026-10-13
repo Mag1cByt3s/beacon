@@ -70,6 +70,14 @@ A timer that is stopped with a result adds an item with the timer's minutes.
 `t done` adds the completed task as an item too, with the minutes of the
 timers that ran for it, and stops a timer still running for it.
 
+## On the iPhone
+
+Four shortcuts ([ios-shortcuts.md](ios-shortcuts.md)): Geschafft notes
+something done, Focus starts and stops a timer, Schlaf-Check asks for the
+sleep quality at 09:30, and Tages-Check asks for the productivity at 23:30
+and sends the day's steps from Health. Productive time is not asked on the
+phone; `t journal` suggests it from what the laptop recorded.
+
 ## Reminders and the prompt (home-manager)
 
 The beacon flake has a home-manager module:
@@ -105,7 +113,8 @@ With `journal.enable` it sets up:
   `${env_var.BEACON_JOURNAL_OPEN}` to it. Without Starship:
   `setopt prompt_subst; RPROMPT='${BEACON_JOURNAL_OPEN:+[$BEACON_JOURNAL_OPEN]}'`.
 - **`beacon-timer-toggle`** for a KDE global shortcut (System Settings →
-  Shortcuts → Add New → Command or Script). It starts a timer, or asks
+  Shortcuts → Add New → Command or Script, or with plasma-manager in
+  `programs.plasma.hotkeys.commands`). It starts a timer, or asks
   "Was geschafft?" in a dialog and stops the running one. Cancel keeps the
   timer running; an empty answer stops it without a note.
 

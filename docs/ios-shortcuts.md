@@ -102,7 +102,7 @@ Sonst
                                 title   Text  «Bereitgestellte Eingabe» (of "Was geschafft?")
                                 kind    Text  «Menüergebnis»
 Ende Wenn
-Ergebnis anzeigen         «Inhalte von URL»
+Ergebnis anzeigen         «Wenn-Ergebnis» (If Result)
 ```
 
 It sends `{"title": "Writeup", "minutes": 45, "kind": "offline"}`, or
@@ -192,8 +192,8 @@ Ende Wenn
 Nach Eingabe fragen       Zahl, "Wie produktiv war der Tag? (1-10)",
                           no decimals, no negative numbers
 Datum anpassen            4 Stunden abziehen from Aktuelles Datum
-Health-Proben suchen      Typ ist Schritte, Startdatum ist am «Angepasstes Datum»,
-                          Einheit count, Gruppieren nach Tag, Begrenzen off
+Health-Proben suchen      Typ ist Schritte, Startdatum is on «Angepasstes Datum»,
+                          Unit count, Group By Day, Limit off
 Statistiken berechnen     Summe of «Health-Proben»
 Zahl runden               «Summe», Einer (Ones)
 Inhalte von URL abrufen   PATCH «Text»/api/journal/today, JSON:
@@ -201,6 +201,10 @@ Inhalte von URL abrufen   PATCH «Text»/api/journal/today, JSON:
                             steps         Zahl  «Gerundete Zahl»
 Mitteilung anzeigen       Gespeichert.
 ```
+
+For the start date, choose *is on* and hold the date field down to insert
+«Angepasstes Datum». *Group By Day* adds the day up to one value, so steps
+from two sources (iPhone and a watch) are not counted twice.
 
 It sends `{"productivity": 7, "steps": 8400}`. The date four hours ago is
 the journal day's date, so a run at 00:30 still counts the steps of the day

@@ -70,7 +70,15 @@ ee /usr/local/etc/beacon/radicale.pass
 ```
 
 beacon refuses to start if other users can open the tokens directory or
-read a token file.
+read a token file. It reads the tokens at startup, so to change a client's
+token (for example after it leaked), write a new one into its file and
+restart; the old one stops working right away:
+
+```sh
+(umask 077 && openssl rand -hex 32 > /usr/local/etc/beacon/tokens/iphone)
+chown beacon:beacon /usr/local/etc/beacon/tokens/iphone
+service beacon restart
+```
 
 Set the jail's time zone to yours, so "overdue" and "due today" are right:
 

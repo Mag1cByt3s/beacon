@@ -51,7 +51,7 @@ On NixOS with home-manager, the flake's module does this:
 ## Run
 
 ```sh
-nix build .#t .#beacon    # or: go build ./cmd/t ./cmd/beacon
+nix build .#t .#beacon    # or: go build -o . ./cmd/...  (also builds beacon-aw-sync)
 beacon                    # start the server
 ```
 
@@ -118,9 +118,10 @@ duplicate. Only captures are saved; `done` and `skip` never are.
 
 ### Journal
 
-A daily journal of sleep, productive time, things done and sport, kept by
-the server (details in [docs/journal.md](docs/journal.md), iPhone shortcuts
-in [docs/ios-shortcuts.md](docs/ios-shortcuts.md)):
+A daily journal of sleep, productive time, things done, sport and steps,
+kept by the server (details in [docs/journal.md](docs/journal.md), iPhone
+shortcuts in [docs/ios-shortcuts.md](docs/ios-shortcuts.md)). Productive
+time comes from focus timers, `t did` and ActivityWatch (`beacon-aw-sync`):
 
 ```sh
 t journal                 # asks for what is missing today
@@ -143,6 +144,10 @@ eval "$(t hook bash)"    # ~/.bashrc
 The hook runs `t prompt`, which gives up silently after 300 ms. With
 `BEACON_SERVER_URL` set it only asks the server; without, it has to run the
 password command and talk to Radicale, which is often too slow for 300 ms.
+
+`eval "$(t hook zsh-journal)"` sets `BEACON_JOURNAL_OPEN` while a part of
+today's journal is missing, for a prompt marker. It never asks the server
+itself; see [docs/journal.md](docs/journal.md).
 
 ## API
 

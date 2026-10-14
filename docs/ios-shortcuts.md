@@ -168,10 +168,8 @@ Mitteilung anzeigen       Gespeichert.
 It sends `{"sleep_quality": 7}`. If the GET fails (a wrong token), there is
 no `missing` and the shortcut stops without asking.
 
-Automation: *Automation* tab → **+** → *Tageszeit* (Time of Day) → 09:30,
-*Täglich* (Daily) → *Sofort ausführen* (Run Immediately) → Schlaf-Check. If
-the question does not show while the phone is locked, use *Vor dem
-Ausführen bestätigen* (Confirm Before Running) instead.
+Automation: Time of Day, at 09:30, daily, running Schlaf-Check. See
+[Automations](#automations) for the two settings it needs.
 
 ## 4. Tages-Check
 
@@ -214,8 +212,25 @@ Saving `productivity` completes the evening part. Productive time and
 windows stay with the laptop: `t journal` suggests them from the focus
 timers, `t did` and ActivityWatch.
 
-Automation: *Tageszeit* 23:30, daily, *Sofort ausführen*. Optionally a
-second one at 00:30: it stops right away if the evening is already done.
+Automation: Time of Day, at 23:30, daily, running Tages-Check (settings in
+[Automations](#automations)). Optionally a second one at 00:30: it stops
+right away if the evening is already done.
+
+## Automations
+
+Schlaf-Check and Tages-Check ask a question, which needs two settings, or
+the automation does nothing while the phone is locked (iOS 27):
+
+- In the shortcut: ⓘ → *Privacy* → **Allow Running When Locked** on.
+  Without it iOS skips the automation while the phone is locked, without a
+  word.
+- In the automation, in the setting of its time (*At 09:30*): **Notify**
+  on. Without it the automation runs but drops the question silently; with
+  it the screen wakes up and the question shows on the lock screen.
+
+The server log shows whether an automation ran: a `GET
+/api/journal/today` with `client=iphone` at that time. iOS keeps no history
+of automations.
 
 ## Testing
 

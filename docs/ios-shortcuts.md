@@ -1,20 +1,25 @@
 # iPhone shortcuts for the journal
 
-Four shortcuts for the Shortcuts app (Kurzbefehle) that talk to the journal
-API (see [journal.md](journal.md)):
+Shortcuts for the Shortcuts app (Kurzbefehle) that talk to the journal API
+(see [journal.md](journal.md)):
 
 1. **Geschafft:** notes something done, from the home screen or Siri.
 2. **Focus:** starts and stops a focus timer.
-3. **Schlaf-Check:** every morning at 09:30, asks how you slept.
-4. **Tages-Check:** every evening at 23:30, asks how productive the day was
-   and sends the day's steps.
+3. **Schlaf-Check:** asks how you slept.
+4. **Tages-Check:** asks how productive the day was and sends the day's
+   steps.
+5. **Schlaf-Erinnerung** and **Tages-Erinnerung:** run by automations at
+   09:30 and 23:30. If that part of the day is still missing, they show a
+   notification that starts the check when tapped (see
+   [Reminders](#reminders)). This needs the app
+   [Pushcut](https://www.pushcut.io) (free).
 
 The phone asks as little as possible. Productive time is not asked at all:
 the laptop records it (focus timers, `t did`, ActivityWatch) and suggests it
 in `t journal`. Walking shows up in the steps, so there is no sport
 question either.
 
-Action names are those of a German iPhone (iOS 18); the English name follows
+Action names are those of a German iPhone (iOS 27); the English name follows
 in parentheses, as names differ slightly between versions. `«Name»` means:
 insert the variable or the result of the action with that name.
 
@@ -77,7 +82,7 @@ chown beacon:beacon /usr/local/etc/beacon/tokens/iphone
 service beacon restart   # tokens are read at startup
 ```
 
-Then paste the new token into the token Text of all four shortcuts.
+Then paste the new token into the token Text of all six shortcuts.
 
 ## 1. Geschafft
 
@@ -163,13 +168,14 @@ Nach Eingabe fragen       Zahl, "Wie hast du geschlafen? (1-10)",
 Inhalte von URL abrufen   PATCH «Text»/api/journal/today, JSON:
                             sleep_quality  Zahl  «Bereitgestellte Eingabe»
 Mitteilung anzeigen       Gespeichert.
+Zum Home-Bildschirm       (Go to Home Screen)
 ```
 
 It sends `{"sleep_quality": 7}`. If the GET fails (a wrong token), there is
 no `missing` and the shortcut stops without asking.
 
-Automation: Time of Day, at 09:30, daily, running Schlaf-Check. See
-[Automations](#automations) for the two settings it needs.
+Started from a notification, the shortcut runs in the Shortcuts app; *Zum
+Home-Bildschirm* closes it again after saving.
 
 ## 4. Tages-Check
 
@@ -198,6 +204,7 @@ Inhalte von URL abrufen   PATCH «Text»/api/journal/today, JSON:
                             productivity  Zahl  «Bereitgestellte Eingabe»
                             steps         Zahl  «Gerundete Zahl»
 Mitteilung anzeigen       Gespeichert.
+Zum Home-Bildschirm       (Go to Home Screen)
 ```
 
 For the start date, choose *is on* and hold the date field down to insert
@@ -212,21 +219,75 @@ Saving `productivity` completes the evening part. Productive time and
 windows stay with the laptop: `t journal` suggests them from the focus
 timers, `t did` and ActivityWatch.
 
-Automation: Time of Day, at 23:30, daily, running Tages-Check (settings in
-[Automations](#automations)). Optionally a second one at 00:30: it stops
-right away if the evening is already done.
+## Reminders
 
-## Automations
+An automation cannot run Schlaf-Check or Tages-Check itself, because a
+question in an automation is lost while the phone is locked (iOS 27):
 
-Schlaf-Check and Tages-Check ask a question, which needs two settings, or
-the automation does nothing while the phone is locked (iOS 27):
+- With *Allow Running When Locked* off, iOS skips the automation while the
+  phone is locked, without a word.
+- With it on, the automation runs, but drops the question silently.
+- With *Notify* on in the automation as well, the question shows on the
+  lock screen, but only while the screen is on. Once it goes dark, the
+  question is gone, and the leftover notification opens the list of
+  automations, not the shortcut.
 
-- In the shortcut: ⓘ → *Privacy* → **Allow Running When Locked** on.
-  Without it iOS skips the automation while the phone is locked, without a
-  word.
-- In the automation, in the setting of its time (*At 09:30*): **Notify**
-  on. Without it the automation runs but drops the question silently; with
-  it the screen wakes up and the question shows on the lock screen.
+Notifications of the Shortcuts app cannot start a shortcut, so the
+automations run a reminder shortcut that only checks, and leave the
+question to a Pushcut notification. It stays in Notification Center until
+it is tapped, and tapping it starts the check.
+
+**In Pushcut** (Notifications → +), two notifications. Their default
+action is what a tap on the notification does:
+
+| Name | Title | Default action |
+|---|---|---|
+| `Schlaf-Check` | `Wie hast du geschlafen?` | Run Shortcut: Schlaf-Check |
+| `Tages-Check` | `Wie war der Tag?` | Run Shortcut: Tages-Check |
+
+Both with the text `Antippen zum Eintragen` and *Time Sensitive* on, so
+they show at the top. The free version allows three notifications.
+
+**Schlaf-Erinnerung:** Schlaf-Check up to *Ende Wenn*, then Pushcut's own
+action instead of the question:
+
+```
+Text                      https://beacon.example.org
+Text                      <token>
+Variable festlegen        Token
+Inhalte von URL abrufen   GET «Text»/api/journal/today
+Wörterbuchwert abrufen    missing  in «Inhalte von URL»
+Text kombinieren          «Wörterbuchwert»  with Leerzeichen
+Wenn «Kombinierter Text» enthält nicht  morning
+    Kurzbefehl stoppen
+Sonst
+Ende Wenn
+Show Notification (Pushcut)   Notification: Schlaf-Check, Trigger: Now
+```
+
+**Tages-Erinnerung:** the same with `evening` and the notification
+Tages-Check (without the steps; the check reads them when it runs).
+
+Duplicate the check and delete everything below *Ende Wenn*. Take
+Pushcut's *Show Notification*, not the one of Shortcuts.
+
+**The automations** (Time of Day, daily):
+
+| At | Runs |
+|---|---|
+| 09:30 | Schlaf-Erinnerung |
+| 23:30 | Tages-Erinnerung |
+
+- In both reminder shortcuts: ⓘ → *Privacy* → **Allow Running When
+  Locked** on, or iOS skips them while the phone is locked.
+- In the automations: **Notify** off. They ask nothing themselves, so
+  their own notification would only sit next to Pushcut's.
+- Duplicating a shortcut may copy its automation. Keep exactly one per
+  time, or the reminder comes twice.
+
+If a part is already filled in (on the laptop, for example), the reminder
+stops without a notification. The laptop reminds as well, at 09:45 and
+23:45 (see [journal.md](journal.md)).
 
 The server log shows whether an automation ran: a `GET
 /api/journal/today` with `client=iphone` at that time. iOS keeps no history
@@ -235,8 +296,11 @@ of automations.
 ## Testing
 
 `today` in a URL is the current journal day, which changes at 04:00. When
-today's part is already filled in, Schlaf-Check and Tages-Check stop right
+today's part is already filled in, the checks and the reminders stop right
 away. To test one anyway, put a past date in both URLs
 (`«Text»/api/journal/2026-10-12`), run it, check the day with
 `t journal show 2026-10-12`, and change the URLs back to `today`. Clear the
 test value with a PATCH of `{"sleep_quality": null}` (or `productivity`).
+
+To test an automation, set its time two minutes ahead, lock the phone, and
+set it back afterwards.

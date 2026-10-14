@@ -72,11 +72,12 @@ timers that ran for it, and stops a timer still running for it.
 
 ## On the iPhone
 
-Four shortcuts ([ios-shortcuts.md](ios-shortcuts.md)): Geschafft notes
+Shortcuts ([ios-shortcuts.md](ios-shortcuts.md)): Geschafft notes
 something done, Focus starts and stops a timer, Schlaf-Check asks for the
-sleep quality at 09:30, and Tages-Check asks for the productivity at 23:30
-and sends the day's steps from Health. Productive time is not asked on the
-phone; `t journal` suggests it from what the laptop recorded.
+sleep quality, and Tages-Check asks for the productivity and sends the
+day's steps from Health. At 09:30 and 23:30 a notification reminds you if
+that part is missing; tapping it starts the check. Productive time is not
+asked on the phone; `t journal` suggests it from what the laptop recorded.
 
 ## Reminders and the prompt (home-manager)
 

@@ -145,9 +145,10 @@ The hook runs `t prompt`, which gives up silently after 300 ms. With
 `BEACON_SERVER_URL` set it only asks the server; without, it has to run the
 password command and talk to Radicale, which is often too slow for 300 ms.
 
-`eval "$(t hook zsh-journal)"` sets `BEACON_JOURNAL_OPEN` while a part of
-today's journal is missing, for a prompt marker. It never asks the server
-itself; see [docs/journal.md](docs/journal.md).
+`eval "$(t hook zsh-journal)"` sets `BEACON_JOURNAL_OPEN` for a prompt
+marker while today's journal misses the morning part, or from 23:00 the
+evening part. It never asks the server itself; see
+[docs/journal.md](docs/journal.md).
 
 ## API
 

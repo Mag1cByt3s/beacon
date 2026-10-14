@@ -24,14 +24,22 @@ if [[ -o interactive ]] && (( $+commands[t] )); then
   command t prompt 2>/dev/null
 fi
 `,
-	"zsh-journal": `# beacon: set BEACON_JOURNAL_OPEN while a part of today's journal is
-# missing, for the prompt to show. It only reads a cache file, which
-# "t journal status --write-cache" keeps up to date (run it from a timer);
-# the prompt itself never touches the network.
+	"zsh-journal": `# beacon: set BEACON_JOURNAL_OPEN while today's journal misses the
+# morning part, or from 23:00 the evening part, for the prompt to show.
+# It only reads a cache file, which "t journal status --write-cache" keeps
+# up to date (run it from a timer); the prompt never touches the network.
 # Starship: [env_var.BEACON_JOURNAL_OPEN] with format = '[\[$env_value\]]($style) '
 # Plain zsh: setopt prompt_subst; RPROMPT='${BEACON_JOURNAL_OPEN:+[$BEACON_JOURNAL_OPEN]}'
 _beacon_journal_precmd() {
-  if [[ -s ${XDG_CACHE_HOME:-$HOME/.cache}/beacon/journal-open ]]; then
+  # The missing parts ("morning evening") and the hour, without starting
+  # a process: read is built in, %D{%H} is a prompt escape.
+  local file=${XDG_CACHE_HOME:-$HOME/.cache}/beacon/journal-open
+  local missing= hour=${(%):-%D{%H}}
+  [[ -r $file ]] && read -r missing <$file
+  # The evening part only counts from 23:00 until the journal day ends at
+  # 04:00; before that the day is not over yet.
+  if [[ $missing == *morning* ||
+        ( $missing == *evening* && $hour == (23|0[0-3]) ) ]]; then
     export BEACON_JOURNAL_OPEN="journal offen"
   else
     unset BEACON_JOURNAL_OPEN

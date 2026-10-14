@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http/httptest"
@@ -536,23 +537,49 @@ func TestJournalHookRuns(t *testing.T) {
 	script := "show() { print -r -- \"[$BEACON_JOURNAL_OPEN]\" }\nprecmd_functions=(show)\n" +
 		hooks["zsh-journal"] + hooks["zsh-journal"] +
 		"\n(( ${#precmd_functions} == 2 )) || print duplicate\nfor f in $precmd_functions; do $f; done\n"
-	check := func(want string) {
+	// check runs the script at half past hour.
+	check := func(hour int, want string) {
 		t.Helper()
 		cmd := exec.Command(zsh, "-f", "-c", script)
-		cmd.Env = append(os.Environ(), "XDG_CACHE_HOME="+cache, "BEACON_JOURNAL_OPEN=stale")
+		cmd.Env = append(os.Environ(), "XDG_CACHE_HOME="+cache, "BEACON_JOURNAL_OPEN=stale",
+			"TZ="+tzAt(hour))
 		out, err := cmd.CombinedOutput()
 		if err != nil {
 			t.Fatalf("%v\n%s", err, out)
 		}
 		if got := strings.TrimSpace(string(out)); got != want {
-			t.Errorf("got %q, want %q", got, want)
+			t.Errorf("at %02d:30: got %q, want %q", hour, got, want)
 		}
 	}
-	check("[]") // no cache file yet
-	writeJournalCache([]string{"morning"})
-	check("[journal offen]")
+	check(14, "[]") // no cache file yet
+	writeJournalCache([]string{"morning", "evening"})
+	check(14, "[journal offen]") // the morning part counts all day
+	writeJournalCache([]string{"evening"})
+	for _, hour := range []int{4, 14, 22} {
+		check(hour, "[]")
+	}
+	for _, hour := range []int{23, 0, 3} {
+		check(hour, "[journal offen]")
+	}
 	writeJournalCache(nil)
-	check("[]")
+	check(23, "[]")
+}
+
+// tzAt returns a TZ value in which it is now about half past hour. The
+// sign of a TZ offset is the other way round: "BCN-2:30" is UTC+2:30.
+func tzAt(hour int) string {
+	now := time.Now().UTC()
+	offset := hour*60 + 30 - (now.Hour()*60 + now.Minute()) // in minutes
+	// Keep it within ±12 hours, which every system accepts.
+	offset = (offset%1440 + 1440) % 1440
+	if offset > 720 {
+		offset -= 1440
+	}
+	sign := "-"
+	if offset < 0 {
+		sign, offset = "", -offset
+	}
+	return fmt.Sprintf("BCN%s%d:%02d", sign, offset/60, offset%60)
 }
 
 func ptr(i int) *int { return &i }

@@ -160,7 +160,7 @@ in
       zshIntegration = lib.mkOption {
         type = lib.types.bool;
         default = true;
-        description = "Set BEACON_JOURNAL_OPEN in zsh while a part of today's journal is missing.";
+        description = "Set BEACON_JOURNAL_OPEN in zsh while today's journal misses the morning part, or from 23:00 the evening part.";
       };
 
       starshipIntegration = lib.mkOption {

@@ -108,8 +108,10 @@ With `journal.enable` it sets up:
 - **A prompt marker.** A timer runs `t journal status --write-cache` every
   15 minutes, which writes the missing parts to
   `~/.cache/beacon/journal-open`. The zsh hook (`t hook zsh-journal`) only
-  checks whether that file is empty and sets `BEACON_JOURNAL_OPEN`, so the
-  prompt never waits for the network. The module configures Starship to
+  reads that file, so the prompt never waits for the network. It sets
+  `BEACON_JOURNAL_OPEN` while the morning part is missing, and for the
+  evening part only from 23:00 until the day ends at 04:00, since the day
+  is not over before that. The module configures Starship to
   show `[journal offen]`; with a custom Starship `format`, add
   `${env_var.BEACON_JOURNAL_OPEN}` to it. Without Starship:
   `setopt prompt_subst; RPROMPT='${BEACON_JOURNAL_OPEN:+[$BEACON_JOURNAL_OPEN]}'`.
